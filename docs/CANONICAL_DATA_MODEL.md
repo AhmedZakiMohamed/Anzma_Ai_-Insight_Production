@@ -74,7 +74,7 @@ Existing behaviour retained: an alert belongs to at most one incident (`alerts.i
 
 ## 3. Entity relationships
 
-![Entity relationships](./img/entity_relationships.png)
+![Entity relationships](./img/Entity_relationships.png)
 
 Diagram notes: `retention_policies`, `unit_conversions`, `metric_type_system_compat`, `event_type_system_compat` are catalogue/config tables without drawn relationships to keep the diagram readable. `building_id` columns marked “NEW column” are denormalised and kept consistent by composite FKs (§15). `asset_external_ids` has composite key `(source_id, external_id)`.
 
