@@ -11,7 +11,8 @@ from datetime import timedelta
 TEST_DB = "anzma_api_test"
 HOST, PORT = os.getenv("PGHOST", "localhost"), os.getenv("PGPORT", "5432")
 USER, PASSWORD = os.getenv("PGUSER", "postgres"), os.getenv("PGPASSWORD", "")
-ROOT = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, ROOT)
 
 import psycopg                                    # noqa: E402
 from psycopg.rows import dict_row                 # noqa: E402
@@ -32,7 +33,7 @@ for _m in ("003_incidents", "004_chat_views", "005_alert_uniqueness"):   # same 
 
 os.environ.update(PGHOST=HOST, PGPORT=PORT, PGUSER=USER, PGPASSWORD=PASSWORD, PGDATABASE=TEST_DB)
 from fastapi.testclient import TestClient         # noqa: E402
-import app.App as App                                        # noqa: E402
+import app.main as App                                        # noqa: E402
 
 client = TestClient(App.api)
 RESULTS = []
@@ -261,7 +262,7 @@ def _():
     hv = client.post("/chat", json={"message": "Why is CRAC 1 temperature high?", "use_llm": False}).json()
     assert hv["source"] == "FALLBACK" and hv["grounding"]["passed"] is True and hv["sources"]
     assert all("verified in database" in s["text"] for s in hv["sources"]) and "[F1]" in hv["answer"]
-    from alert_config import T
+    from app.domain.alerts.alert_config import T
     latest_crac = one("""SELECT a.name, l.name AS zone FROM telemetry_records t
                         JOIN assets a USING (asset_id) JOIN locations l USING (location_id)
                         JOIN metric_types m USING (metric_id) JOIN system_types st USING (system_type_id)

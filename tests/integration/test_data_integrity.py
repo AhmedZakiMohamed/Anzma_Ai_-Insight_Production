@@ -15,8 +15,8 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
-REPO = os.path.dirname(ROOT)
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+REPO = ROOT
 sys.path.insert(0, ROOT)
 import app.adapters.database.db_adapter as da                                   # noqa: E402  (selects the driver)
 
@@ -24,9 +24,9 @@ HOST, PORT = os.getenv("PGHOST", "localhost"), os.getenv("PGPORT", "5432")
 USER, PASSWORD = os.getenv("PGUSER", "anzma"), os.getenv("PGPASSWORD", "anzma")
 TEST_DB = "anzma_integrity_test"
 SEQUENCE = [os.path.join(REPO, "db", "init", "anzma_schema_and_seed.sql"),
-            os.path.join(ROOT, "..", "db", "migrations", "003_incidents.sql"),
-            os.path.join(ROOT, "..", "db", "migrations", "004_chat_views.sql"),
-            os.path.join(ROOT, "..", "db", "migrations", "005_alert_uniqueness.sql")]
+            os.path.join(ROOT, "db", "migrations", "003_incidents.sql"),
+            os.path.join(ROOT, "db", "migrations", "004_chat_views.sql"),
+            os.path.join(ROOT, "db", "migrations", "005_alert_uniqueness.sql")]
 CHECK, FK, UNIQUE, NOTNULL = "23514", "23503", "23505", "23502"
 T0 = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
 

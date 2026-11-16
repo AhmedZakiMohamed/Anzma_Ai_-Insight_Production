@@ -10,7 +10,7 @@ PostgreSQL 16 (Docker Compose, `postgres:16`). **13 tables + 5 views.** The auth
 | 1 | `db/init/anzma_schema_and_seed.sql` | 12 tables (reference, facts, alerts, scenario_runs) + seed | tracked; clean install exit 0 (evidence) |
 | 2 | `db/migrations/003_incidents.sql` | `incidents`, `alerts.incident_id`, 3 indexes | present; idempotent by design |
 | 3 | `db/migrations/004_chat_views.sql` | 5 views `v_*` | present; idempotent by design |
-| 4 | `db/migrations/005_alert_uniqueness.sql` | UNIQUE index `uq_alerts_rule_asset_first_ts` | present; Ahmed reports execution in his test run; not verified against this runtime |
+| 4 | `db/migrations/005_alert_uniqueness.sql` | UNIQUE index `uq_alerts_rule_asset_first_ts` | present; Ahmed reports execution in his test run; Verified on the running database (container anzma-insight-db-1, commit b26b324, 2026-11-17): scripts/verify_schema.sql returned OVERALL OK (checks 1–10 all OK); 13 tables, 5 views; uq_alerts_rule_asset_first_ts present. Log: test_logs/1_verify_schema.txt. |
 
 Not authoritative: `data-model.sql` (22-table draft, not loaded by Compose). `db/init/anzma_schema_and_seed.sql` is the single bootstrap schema-and-seed file; tests use this path directly.
 

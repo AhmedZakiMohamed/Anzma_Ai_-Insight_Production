@@ -1,0 +1,200 @@
+db-1  | (1 row)
+db-1  | 
+db-1  |  bad_telemetry 
+db-1  | ---------------
+db-1  |              0
+db-1  | (1 row)
+db-1  | 
+db-1  |  bad_events 
+db-1  | ------------
+db-1  |           0
+db-1  | (1 row)
+db-1  | 
+db-1  | 
+db-1  | 
+db-1  | /usr/local/bin/docker-entrypoint.sh: running /docker-entrypoint-initdb.d/02-incidents.sql
+db-1  | BEGIN
+db-1  | CREATE TABLE
+db-1  | ALTER TABLE
+db-1  | CREATE INDEX
+db-1  | CREATE INDEX
+db-1  | CREATE INDEX
+db-1  | COMMIT
+db-1  | 
+db-1  | 
+db-1  | /usr/local/bin/docker-entrypoint.sh: running /docker-entrypoint-initdb.d/03-chat-views.sql
+db-1  | BEGIN
+db-1  | CREATE VIEW
+db-1  | CREATE VIEW
+db-1  | CREATE VIEW
+db-1  | CREATE VIEW
+db-1  | CREATE VIEW
+db-1  | COMMIT
+db-1  | 
+db-1  | 
+db-1  | /usr/local/bin/docker-entrypoint.sh: running /docker-entrypoint-initdb.d/04-alert-uniqueness.sql
+db-1  | BEGIN
+db-1  | DO
+db-1  | CREATE INDEX
+db-1  | COMMIT
+db-1  | 
+db-1  | 
+db-1  | waiting for server to shut down....2026-11-16 21:58:06.142 UTC [48] LOG:  received fast shutdown request
+db-1  | 2026-11-16 21:58:06.142 UTC [48] LOG:  aborting any active transactions
+db-1  | 2026-11-16 21:58:06.143 UTC [48] LOG:  background worker "logical replication launcher" (PID 54) exited with exit code 1
+db-1  | 2026-11-16 21:58:06.143 UTC [49] LOG:  shutting down
+db-1  | 2026-11-16 21:58:06.144 UTC [49] LOG:  checkpoint starting: shutdown immediate
+db-1  | 2026-11-16 21:58:06.173 UTC [49] LOG:  checkpoint complete: wrote 1157 buffers (7.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.009 s, sync=0.018 s, total=0.030 s; sync files=382, longest=0.005 s, average=0.001 s; distance=6769 kB, estimate=6769 kB; lsn=0/1BA0E18, redo lsn=0/1BA0E18
+db-1  | 2026-11-16 21:58:06.175 UTC [48] LOG:  database system is shut down
+db-1  |  done
+db-1  | server stopped
+db-1  | 
+db-1  | PostgreSQL init process complete; ready for start up.
+db-1  | 
+db-1  | 2026-11-16 21:58:06.253 UTC [1] LOG:  starting PostgreSQL 16.16 (Debian 16.16-1.pgdg13+1) on aarch64-unknown-linux-gnu, compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit
+db-1  | 2026-11-16 21:58:06.253 UTC [1] LOG:  listening on IPv4 address "0.0.0.0", port 5432
+db-1  | 2026-11-16 21:58:06.253 UTC [1] LOG:  listening on IPv6 address "::", port 5432
+db-1  | 2026-11-16 21:58:06.254 UTC [1] LOG:  listening on Unix socket "/var/run/postgresql/.s.PGSQL.5432"
+db-1  | 2026-11-16 21:58:06.256 UTC [72] LOG:  database system was shut down at 2026-11-16 21:58:06 UTC
+db-1  | 2026-11-16 21:58:06.258 UTC [1] LOG:  database system is ready to accept connections
+db-1  | 2026-11-16 22:03:06.349 UTC [70] LOG:  checkpoint starting: time
+db-1  | 2026-11-16 22:03:16.738 UTC [70] LOG:  checkpoint complete: wrote 104 buffers (0.6%); 1 WAL file(s) added, 0 removed, 0 recycled; write=10.354 s, sync=0.008 s, total=10.389 s; sync files=26, longest=0.002 s, average=0.001 s; distance=457 kB, estimate=457 kB; lsn=0/1C133C8, redo lsn=0/1C13390
+db-1  | 2026-11-16 22:28:06.880 UTC [70] LOG:  checkpoint starting: time
+db-1  | 2026-11-16 22:28:10.781 UTC [70] LOG:  checkpoint complete: wrote 39 buffers (0.2%); 0 WAL file(s) added, 0 removed, 0 recycled; write=3.882 s, sync=0.010 s, total=3.902 s; sync files=26, longest=0.005 s, average=0.001 s; distance=46 kB, estimate=416 kB; lsn=0/1C1ECB8, redo lsn=0/1C1EC80
+db-1  | 2026-11-16 22:33:06.887 UTC [70] LOG:  checkpoint starting: time
+db-1  | 2026-11-16 22:33:07.415 UTC [70] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.519 s, sync=0.004 s, total=0.529 s; sync files=6, longest=0.003 s, average=0.001 s; distance=24 kB, estimate=377 kB; lsn=0/1C24D50, redo lsn=0/1C24D18
+db-1  | 2026-11-16 22:38:06.429 UTC [70] LOG:  checkpoint starting: time
+db-1  | 2026-11-16 22:38:06.754 UTC [70] LOG:  checkpoint complete: wrote 4 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.314 s, sync=0.005 s, total=0.326 s; sync files=4, longest=0.004 s, average=0.002 s; distance=16 kB, estimate=340 kB; lsn=0/1C28F58, redo lsn=0/1C28F20
+db-1  | 2026-11-16 22:42:47.266 UTC [1] LOG:  received fast shutdown request
+db-1  | 2026-11-16 22:42:47.268 UTC [1] LOG:  aborting any active transactions
+db-1  | 2026-11-16 22:42:47.270 UTC [1] LOG:  background worker "logical replication launcher" (PID 75) exited with exit code 1
+db-1  | 2026-11-16 22:42:47.270 UTC [70] LOG:  shutting down
+db-1  | 2026-11-16 22:42:47.272 UTC [70] LOG:  checkpoint starting: shutdown immediate
+db-1  | 2026-11-16 22:42:47.279 UTC [70] LOG:  checkpoint complete: wrote 8 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.002 s, sync=0.002 s, total=0.009 s; sync files=8, longest=0.002 s, average=0.001 s; distance=9 kB, estimate=307 kB; lsn=0/1C2B360, redo lsn=0/1C2B360
+db-1  | 2026-11-16 22:42:47.282 UTC [1] LOG:  database system is shut down
+db-1  | 
+db-1  | PostgreSQL Database directory appears to contain a database; Skipping initialization
+db-1  | 
+db-1  | 2026-11-16 22:42:56.015 UTC [1] LOG:  starting PostgreSQL 16.16 (Debian 16.16-1.pgdg13+1) on aarch64-unknown-linux-gnu, compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit
+db-1  | 2026-11-16 22:42:56.015 UTC [1] LOG:  listening on IPv4 address "0.0.0.0", port 5432
+db-1  | 2026-11-16 22:42:56.015 UTC [1] LOG:  listening on IPv6 address "::", port 5432
+db-1  | 2026-11-16 22:42:56.017 UTC [1] LOG:  listening on Unix socket "/var/run/postgresql/.s.PGSQL.5432"
+db-1  | 2026-11-16 22:42:56.019 UTC [29] LOG:  database system was shut down at 2026-11-16 22:42:47 UTC
+db-1  | 2026-11-16 22:42:56.022 UTC [1] LOG:  database system is ready to accept connections
+db-1  | 2026-11-16 22:43:16.656 UTC [1] LOG:  received fast shutdown request
+db-1  | 2026-11-16 22:43:16.658 UTC [1] LOG:  aborting any active transactions
+db-1  | 2026-11-16 22:43:16.659 UTC [1] LOG:  background worker "logical replication launcher" (PID 32) exited with exit code 1
+db-1  | 2026-11-16 22:43:16.659 UTC [27] LOG:  shutting down
+db-1  | 2026-11-16 22:43:16.660 UTC [27] LOG:  checkpoint starting: shutdown immediate
+db-1  | 2026-11-16 22:43:16.663 UTC [27] LOG:  checkpoint complete: wrote 5 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.001 s, sync=0.001 s, total=0.004 s; sync files=4, longest=0.001 s, average=0.001 s; distance=4 kB, estimate=4 kB; lsn=0/1C2C460, redo lsn=0/1C2C460
+db-1  | 2026-11-16 22:43:16.665 UTC [1] LOG:  database system is shut down
+db-1  | 
+db-1  | PostgreSQL Database directory appears to contain a database; Skipping initialization
+db-1  | 
+db-1  | 2026-11-16 23:05:48.635 UTC [1] LOG:  starting PostgreSQL 16.16 (Debian 16.16-1.pgdg13+1) on aarch64-unknown-linux-gnu, compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit
+db-1  | 2026-11-16 23:05:48.635 UTC [1] LOG:  listening on IPv4 address "0.0.0.0", port 5432
+db-1  | 2026-11-16 23:05:48.635 UTC [1] LOG:  listening on IPv6 address "::", port 5432
+db-1  | 2026-11-16 23:05:48.636 UTC [1] LOG:  listening on Unix socket "/var/run/postgresql/.s.PGSQL.5432"
+db-1  | 2026-11-16 23:05:48.638 UTC [29] LOG:  database system was shut down at 2026-11-16 22:43:16 UTC
+db-1  | 2026-11-16 23:05:48.643 UTC [1] LOG:  database system is ready to accept connections
+db-1  | 2026-11-16 23:06:39.004 UTC [135] WARNING:  there is already a transaction in progress
+api-1  | INFO:     connection open
+api-1  | INFO:     127.0.0.1:58378 - "GET /health HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:44102 - "GET /dashboard/trends?hours=6 HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:44712 - "GET /dashboard/equipment-health?hours=6 HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:50940 - "GET /dashboard/overview?hours=6 HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:44712 - "GET /dashboard/trends?hours=24 HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:44102 - "GET /dashboard/equipment-health?hours=24 HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:50940 - "GET /dashboard/overview?hours=24 HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:50940 - "GET /dashboard/trends?hours=24&system_type=ACCESS HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:44102 - "GET /dashboard/equipment-health?hours=24&system_type=ACCESS HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:44712 - "GET /dashboard/overview?hours=24&system_type=ACCESS HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:44549 - "GET /dashboard/trends?hours=24&system_type=HVAC HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:53169 - "GET /dashboard/equipment-health?hours=24&system_type=HVAC HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:57176 - "GET /dashboard/overview?hours=24&system_type=HVAC HTTP/1.1" 200 OK
+api-1  | INFO:     127.0.0.1:44272 - "GET /health HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:53169 - "GET /dashboard/trends?hours=24&system_type=NETWORK HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:44549 - "GET /dashboard/equipment-health?hours=24&system_type=NETWORK HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:57176 - "GET /dashboard/overview?hours=24&system_type=NETWORK HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:61617 - "GET /dashboard/trends?hours=48&system_type=NETWORK HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:41846 - "GET /dashboard/equipment-health?hours=48&system_type=NETWORK HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:16961 - "GET /dashboard/overview?hours=48&system_type=NETWORK HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:41846 - "GET /dashboard/trends?hours=24&system_type=NETWORK HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:61617 - "GET /dashboard/equipment-health?hours=24&system_type=NETWORK HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:16961 - "GET /dashboard/overview?hours=24&system_type=NETWORK HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:61617 - "GET /dashboard/trends?hours=12&system_type=NETWORK HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:41846 - "GET /dashboard/equipment-health?hours=12&system_type=NETWORK HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:16961 - "GET /dashboard/overview?hours=12&system_type=NETWORK HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:41846 - "GET /dashboard/trends?hours=6&system_type=NETWORK HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:61617 - "GET /dashboard/equipment-health?hours=6&system_type=NETWORK HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:16961 - "GET /dashboard/overview?hours=6&system_type=NETWORK HTTP/1.1" 200 OK
+api-1  | INFO:     127.0.0.1:48022 - "GET /health HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:61617 - "GET /dashboard/trends?hours=48&system_type=NETWORK HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:41846 - "GET /dashboard/equipment-health?hours=48&system_type=NETWORK HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:16961 - "GET /dashboard/overview?hours=48&system_type=NETWORK HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:41846 - "GET /dashboard/trends?hours=48&system_type=FIRE_ALARM HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:61617 - "GET /dashboard/equipment-health?hours=48&system_type=FIRE_ALARM HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:16961 - "GET /dashboard/overview?hours=48&system_type=FIRE_ALARM HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:61617 - "GET /dashboard/trends?hours=48&system_type=CCTV HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:41846 - "GET /dashboard/equipment-health?hours=48&system_type=CCTV HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:16961 - "GET /dashboard/overview?hours=48&system_type=CCTV HTTP/1.1" 200 OK
+api-1  | INFO:     127.0.0.1:55460 - "GET /health HTTP/1.1" 200 OK
+api-1  | INFO:     127.0.0.1:47458 - "GET /health HTTP/1.1" 200 OK
+api-1  | INFO:     127.0.0.1:34188 - "GET /health HTTP/1.1" 200 OK
+api-1  | INFO:     127.0.0.1:43710 - "GET /health HTTP/1.1" 200 OK
+api-1  | INFO:     127.0.0.1:33152 - "GET /health HTTP/1.1" 200 OK
+api-1  | INFO:     127.0.0.1:45750 - "GET /health HTTP/1.1" 200 OK
+api-1  | INFO:     127.0.0.1:34318 - "GET /health HTTP/1.1" 200 OK
+api-1  | INFO:     127.0.0.1:34980 - "GET /health HTTP/1.1" 200 OK
+api-1  | INFO:     127.0.0.1:39678 - "GET /health HTTP/1.1" 200 OK
+api-1  | INFO:     127.0.0.1:36806 - "GET /health HTTP/1.1" 200 OK
+api-1  | INFO:     127.0.0.1:55968 - "GET /health HTTP/1.1" 200 OK
+api-1  | INFO:     Shutting down
+api-1  | INFO:     connection closed
+api-1  | INFO:     Waiting for application shutdown.
+api-1  | INFO:     Application shutdown complete.
+api-1  | INFO:     Finished server process [1]
+api-1  | INFO:     Started server process [1]
+api-1  | INFO:     Waiting for application startup.
+api-1  | INFO:     Application startup complete.
+api-1  | INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+api-1  | INFO:     192.168.65.1:64259 - "GET /dashboard HTTP/1.1" 200 OK
+api-1  | INFO:     ('192.168.65.1', 19959) - "WebSocket /socket.io/?EIO=4&transport=websocket" [accepted]
+api-1  | INFO:     connection open
+api-1  | INFO:     192.168.65.1:39558 - "GET /incidents HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:31245 - "GET /alerts?limit=50 HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:65372 - "GET /dashboard/trends?hours=24 HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:54015 - "GET /dashboard/equipment-health?hours=24 HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:64259 - "GET /dashboard/overview?hours=24 HTTP/1.1" 200 OK
+api-1  | INFO:     127.0.0.1:60710 - "GET /health HTTP/1.1" 200 OK
+api-1  | INFO:     Shutting down
+api-1  | INFO:     connection closed
+api-1  | INFO:     Waiting for application shutdown.
+api-1  | INFO:     Application shutdown complete.
+api-1  | INFO:     Finished server process [1]
+api-1  | INFO:     Started server process [1]
+api-1  | INFO:     Waiting for application startup.
+api-1  | INFO:     Application startup complete.
+api-1  | INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+api-1  | INFO:     127.0.0.1:55374 - "GET /health HTTP/1.1" 200 OK
+api-1  | INFO:     127.0.0.1:41198 - "GET /health HTTP/1.1" 200 OK
+api-1  | INFO:     127.0.0.1:33034 - "GET /health HTTP/1.1" 200 OK
+api-1  | [chat] prompt_tokens = 1026
+api-1  | INFO:     127.0.0.1:44932 - "GET /health HTTP/1.1" 200 OK
+api-1  | [chat] prompt_tokens = 1994
+api-1  | INFO:     192.168.65.1:62100 - "POST /chat HTTP/1.1" 200 OK
+api-1  | INFO:     192.168.65.1:48331 - "POST /alerts/%3CALERT_ID%3E/explain?use_llm=true HTTP/1.1" 422 Unprocessable Entity
+api-1  | INFO:     127.0.0.1:49664 - "GET /health HTTP/1.1" 200 OK
+api-1  | INFO:     127.0.0.1:40612 - "GET /health HTTP/1.1" 200 OK
+api-1  | INFO:     127.0.0.1:56516 - "GET /health HTTP/1.1" 200 OK
+api-1  | INFO:     127.0.0.1:44806 - "GET /health HTTP/1.1" 200 OK
+api-1  | INFO:     127.0.0.1:53486 - "GET /health HTTP/1.1" 200 OK
+api-1  | INFO:     127.0.0.1:44934 - "GET /health HTTP/1.1" 200 OK
+api-1  | INFO:     127.0.0.1:41370 - "GET /health HTTP/1.1" 200 OK
+api-1  | INFO:     127.0.0.1:56372 - "GET /health HTTP/1.1" 200 OK
+api-1  | INFO:     127.0.0.1:37978 - "GET /health HTTP/1.1" 200 OK
+api-1  | INFO:     127.0.0.1:34996 - "GET /health HTTP/1.1" 200 OK
+api-1  | INFO:     127.0.0.1:47786 - "GET /health HTTP/1.1" 200 OK
+api-1  | INFO:     127.0.0.1:42992 - "GET /health HTTP/1.1" 200 OK
+api-1  | INFO:     127.0.0.1:56456 - "GET /health HTTP/1.1" 200 OK
+api-1  | INFO:     127.0.0.1:53244 - "GET /health HTTP/1.1" 200 OK

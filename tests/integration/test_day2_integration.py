@@ -11,14 +11,15 @@ import os
 import sys
 from datetime import timedelta, datetime, timezone
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import app.adapters.database.db_adapter as da                                   # noqa: E402  (selects the driver)
 
 HOST, PORT = os.getenv("PGHOST", "localhost"), os.getenv("PGPORT", "5432")
 USER, PASSWORD = os.getenv("PGUSER", "anzma"), os.getenv("PGPASSWORD", "anzma")
 TEST_DB = "anzma_day2_test"
-ROOT = os.path.dirname(os.path.abspath(__file__))
-SCHEMA_FILE = os.path.join(ROOT, "..", "db", "init", "anzma_schema_and_seed.sql")  # sole runtime schema + demo seed
-MIGRATION_DIR = os.path.join(ROOT, "..", "db", "migrations")
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+SCHEMA_FILE = os.path.join(ROOT, "db", "init", "anzma_schema_and_seed.sql")  # sole runtime schema + demo seed
+MIGRATION_DIR = os.path.join(ROOT, "db", "migrations")
 MIGRATION_003 = os.path.join(MIGRATION_DIR, "003_incidents.sql")  # incidents, loaded AFTER the schema file
 MIGRATION_004 = os.path.join(MIGRATION_DIR, "004_chat_views.sql")  # five v_* views
 MIGRATION_005 = os.path.join(MIGRATION_DIR, "005_alert_uniqueness.sql")  # UNIQUE (rule_id, asset_id, first_ts)
@@ -66,7 +67,7 @@ import app.adapters.model_providers.ai_explainer as ai_explainer                
 import app.adapters.database.db_adapter as da                                   # noqa: E402
 import app.domain.evidence.evidence as evd                                    # noqa: E402
 import app.domain.incidents.incident_engine as inc                             # noqa: E402
-import app.domain.operation.integrity_rules as ir                              # noqa: E402
+import app.domain.operations.integrity_rules as ir                              # noqa: E402
 import app.services.pipeline as pipeline                                           # noqa: E402
 import app.domain.ai.recommendations as recs                            # noqa: E402
 import app.domain.evidence.validation as val                                  # noqa: E402
