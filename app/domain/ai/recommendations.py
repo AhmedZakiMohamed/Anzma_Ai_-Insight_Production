@@ -7,7 +7,7 @@ the facts measured for the alert satisfy that rule's condition. The language mod
 recommendation: it may only phrase an explanation. Each recommendation carries the facts that justify it and
 the evidence refs of the alert, so it can be traced back to stored events.
 """
-import ai_explainer as ai
+from app.adapters.model_providers import ai_explainer as ai
 import app.domain.alerts.alert_config as cfg
 
 

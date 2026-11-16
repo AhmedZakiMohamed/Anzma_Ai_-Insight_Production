@@ -14,7 +14,7 @@ WORKDIR /app
 # `requests` is not in requirements.txt but seed_events.py / inject_scenarios
 # helpers use it, so it is installed here for `docker compose run` use.
 COPY requirements.txt .
-RUN pip install -r requirements.txt requests
+RUN pip install --default-timeout=300 --retries=10 -r requirements.txt requests
 
 
 COPY . .

@@ -16,8 +16,8 @@ All database access goes through the cursor passed in; no SQL lives anywhere els
 from datetime import timedelta
 
 import app.domain.alerts.alert_config as cfg
-import db_adapter as da
-import recommendations as recs
+from app.adapters.database import db_adapter as da
+from app.domain.ai import recommendations as recs
 
 GROUP_GAP_MIN = 15
 GROUPING_RULE = "same_asset_or_system_within_15_min"
