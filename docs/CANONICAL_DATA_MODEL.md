@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Status** | **Proposed specification.** Nothing here is implemented unless marked **[Existing]**. |
-| **Baseline** | The 13-table runtime schema described in `CORE_DATA_ARCHITECTURE.md` §4 (`db/init/anzma_schema_and_seed.sql` + `003_incidents.sql`, views in `004_chat_views.sql`). |
+| **Baseline** | The 13-table runtime schema and 5 views in `db/init/anzma_schema_and_seed.sql` plus `db/migrations/003_incidents.sql`, `004_chat_views.sql`, and `005_alert_uniqueness.sql`; see `DATABASE_BASELINE.md`. |
 | **Related** | `CORE_DATA_ARCHITECTURE.md`, `HISTORIAN_DESIGN.md`, `DATA_MIGRATION_PLAN.md`, `SPRINT_1_TECHNICAL_ISSUES.md` |
 
 Notation: **[Existing]** table/column exists today · **[NEW column]** added to an existing table · **[NEW entity]** new table · **[View]** proposed view · **[Open]** needs a decision.

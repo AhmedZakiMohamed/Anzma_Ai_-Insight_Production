@@ -14,15 +14,18 @@ Conventions used in all five documents:
 - **[Assumption]** / **[Open]** — needs confirmation (see section 13).
 - Findings are by code reading. No SQL, test or service was executed against a database for this review.
 
+> **Current database authority:** this Day 1 review is a historical analysis. For the agreed runtime schema and migration order, use [DATABASE_BASELINE.md](DATABASE_BASELINE.md). The working tree keeps the bootstrap schema at `db/init/` and versioned migrations at `db/migrations/`.
+
 ---
 
 ## 1. Executive summary
 
-Anzma AI Insight today is a working, single-database, simulated-data application. Its **authoritative runtime model** is a 13-table PostgreSQL schema plus 5 views, created by three files loaded in this order (see `docker-compose.yml`, `db` service):
+Anzma AI Insight today is a single-database, simulated-data application. Its **authoritative runtime model** is a 13-table PostgreSQL schema plus 5 views, created by four files loaded in this order (see `docker-compose.yml`, `db` service):
 
-1. `db/init/anzma_schema_and_seed.sql` — 12 tables + seed (identical to `day2_ahmed/anzma_schema_and_seed.sql`; byte-compared, no differences).
-2. `day2_ahmed/migrations/003_incidents.sql` — `incidents` table and `alerts.incident_id`.
-3. `day2_ahmed/migrations/004_chat_views.sql` — 5 read-only views (`v_data_clock`, `v_asset_overview`, `v_incident_overview`, `v_alert_overview`, `v_camera_status`). **Untracked in git** and mounted by a **staged-only** change to `docker-compose.yml`.
+1. `db/init/anzma_schema_and_seed.sql` — 12 tables + seed.
+2. `db/migrations/003_incidents.sql` — `incidents` table and `alerts.incident_id`.
+3. `db/migrations/004_chat_views.sql` — 5 read-only views (`v_data_clock`, `v_asset_overview`, `v_incident_overview`, `v_alert_overview`, `v_camera_status`).
+4. `db/migrations/005_alert_uniqueness.sql` — unique alert key used by `store_alerts`.
 
 The existing intelligence (KPI engine, alert engine, incident engine, evidence verification, grounding validation, chat assistant) is coherent and tested (`TEST_RESULTS_DAY2.txt`: 43/43 integration checks; `TEST_RESULTS_CHAT_CONSISTENCY.txt`: 31/31). **It should be preserved, not rewritten.**
 
@@ -60,7 +63,7 @@ Anzma-Platform-Clean/
 │   ├── recommendations.py, ai_explainer.py playbook recommendations, Ollama phrasing + fallback
 │   ├── db_adapter.py, integrity_rules.py  DB access + enum translation; compatibility rules
 │   ├── pipeline.py                        detect() / explain_alert() / explain_incident()
-│   └── migrations/003_incidents.sql, 004_chat_views.sql (untracked)
+│   └── migrations/003_incidents.sql, 004_chat_views.sql, 005_alert_uniqueness.sql
 ├── db/init/anzma_schema_and_seed.sql      authoritative schema + seed (docker init)
 ├── static/                      dashboard.html, chat widget
 ├── docker-compose.yml           db (postgres:16), ollama, ollama-init, api

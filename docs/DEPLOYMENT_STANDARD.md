@@ -56,7 +56,7 @@ Defaults differ across reviewed modules, and Compose does not pass every runtime
 - Use one canonical migration source for deployment and tests.
 - Verify both clean installation and supported upgrade paths.
 
-The reviewed repository has two schema copies used by different flows. Consolidation must wait until Ahmed confirms the canonical model and all consumers are known.
+The current working tree has one bootstrap schema at `db/init/anzma_schema_and_seed.sql`; Compose and test bootstraps use versioned migrations from `db/migrations/`. See `DATABASE_BASELINE.md` for the sequence. Do not restore or add a second runtime schema copy.
 
 ## 6. Startup, liveness, and readiness
 

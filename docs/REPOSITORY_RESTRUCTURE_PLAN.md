@@ -15,7 +15,7 @@ Reviewed source: submission repository `final` branch, commit `87e084d753bcc478b
 - Dashboard code includes `app/dashboard_core_pg.py` and `app/frontend_api.py`; operational paths in `App.py` use `day2_connect`. The reviewed application uses psycopg and psycopg2 paths. Choosing one driver alone will not remove coupling; connection/configuration and query ownership need boundaries.
 - `App.py` modifies `sys.path` to reach `day2_ahmed`, making imports dependent on repository layout.
 - `chat_api.py`, `chat_engine.py`, and `dashboard_api.py` form a separate path. `App.py` does not register `chat_api.py`. Treat this path as legacy until imports and runtime use are checked; do not delete it during initial restructuring.
-- `db/init/anzma_schema_and_seed.sql` and `day2_ahmed/anzma_schema_and_seed.sql` are separate schema copies used by different flows and can drift.
+- `db/init/anzma_schema_and_seed.sql` is the sole schema-and-seed bootstrap. Versioned schema changes live in `db/migrations/`; tests should use the same paths as Compose.
 - `day2_ahmed/alert_config.py` contains thresholds, rules, and playbooks. These are operational behavior, not just deployment configuration; review changes with Ahmed.
 - `docs/API_CONTRACT.md` describes proposed `/api/v1` paths not found in the current API. Reconcile documentation with the implementation.
 - The current API has no general telemetry ingestion endpoint or external vendor-device-to-Core-asset mapping interface.

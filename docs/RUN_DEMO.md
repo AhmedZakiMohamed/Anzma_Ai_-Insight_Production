@@ -2,17 +2,18 @@
 
 ## 1. Start (empty volume = clean seed)
 ```bash
-cp .env.example .env            # set PGPASSWORD (an .env with a password already exists if you got this folder as a zip)
-docker compose up -d --build
-docker compose ps               # db, ollama, api healthy; ollama-init exits after pulling the model
+cp deploy/examples/.env.example .env            # set PGPASSWORD
+docker compose -f deploy/compose/docker-compose.yml up -d --build
+docker compose -f deploy/compose/docker-compose.yml ps
 ```
-* The first start loads `db/init/anzma_schema_and_seed.sql`, then `day2_ahmed/migrations/003_incidents.sql`
-  automatically (no manual SQL). Both only run on an **empty** volume. Do not remove volumes for a routine restart.
-* `docker compose down -v` deletes local PostgreSQL data and downloaded Ollama models; use it only when that local data is disposable.
+* The first start loads `db/init/anzma_schema_and_seed.sql`, then `db/migrations/003_incidents.sql`,
+  `db/migrations/004_chat_views.sql`, and `db/migrations/005_alert_uniqueness.sql` automatically (no manual SQL).
+  These init files only run on an **empty** volume. Do not remove volumes for a routine restart.
+* `docker compose -f deploy/compose/docker-compose.yml down -v` deletes local PostgreSQL data and downloaded Ollama models; use it only when that local data is disposable.
 * Open **http://localhost:8000** (the dashboard). `/docs` is the API explorer, `/health` the health check.
 * The API runs detection at start-up and every `DETECT_INTERVAL` seconds (default 60). Detection is idempotent.
 * Without the Ollama model (first minutes, or no internet) everything still works: explanations use the
-  deterministic fallback and say so. Check the model: `docker compose logs ollama-init`.
+  deterministic fallback and say so. Check the model: `docker compose -f deploy/compose/docker-compose.yml logs ollama-init`.
 
 ## 2. What the page shows (all from PostgreSQL, nothing hard-coded)
 | Page area | Endpoint | Source tables |
@@ -37,20 +38,20 @@ docker compose ps               # db, ollama, api healthy; ollama-init exits aft
 
 ## 4. Tests (run against PostgreSQL; the user must be allowed to CREATE DATABASE)
 ```bash
-docker compose exec -T api python test_frontend_api.py                   # recreates disposable DB anzma_api_test
-docker compose exec -T api python test_chat_consistency.py               # read-only assistant/dashboard comparison
-docker compose exec -T api python day2_ahmed/test_day2_integration.py    # 43 tests: detection, incidents, evidence
-docker compose exec -T api python day2_ahmed/test_day2_ahmed.py          # 25 offline tests
-python day2_ahmed/e2e_s1.py --build --llm                                # rebuilds only disposable DB anzma_e2e
+docker compose -f deploy/compose/docker-compose.yml exec -T api python tests/integration/test_frontend_api.py
+docker compose -f deploy/compose/docker-compose.yml exec -T api python tests/integration/test_chat_consistency.py
+docker compose -f deploy/compose/docker-compose.yml exec -T api python tests/integration/test_day2_integration.py
+docker compose -f deploy/compose/docker-compose.yml exec -T api python tests/unit/test_day2_ahmed.py
+docker compose -f deploy/compose/docker-compose.yml exec -T api python tests/scenarios/e2e_s1.py --build --llm
 ```
-(`docker compose exec` uses the api container's PG* variables; PGUSER must be a superuser, which `postgres` is.)
+(`docker compose exec` uses the API container's PG* variables; PGUSER must be able to create test databases.)
 
 Latest reported results on 2026-11-12: frontend API **17/17**, chat/dashboard consistency **31/31**. The frontend test logged Ollama timeouts; it verified fallback, not successful live Qwen inference. The `e2e_s1.py` script prints pipeline evidence but does not show the dashboard; capture the browser walkthrough separately.
 
 ## 5. Differences between the page and the data, and what was done
 | Page expected | Database has | Handling |
 |---|---|---|
-| `NETWORK`, `ACCESS` | `NETWORKING`, `ACCESS_CONTROL` | translated in `app/frontend_api.py` (both spellings accepted as input) |
+| `NETWORK`, `ACCESS` | `NETWORKING`, `ACCESS_CONTROL` | translated in `app/api/frontend_api.py` (both spellings accepted as input) |
 | bandwidth in Mbps | `bandwidth_util` in % | chart retitled "utilisation (%)"; peak = max per bucket |
 | access granted + denied | only `access_denied` is stored | API returns `access_granted: null`; the chart draws only denied (never a fake zero) |
 | `/dashboard/summary` in the old shape | `/dashboard/summary` already exists with the KPI-engine shape | left untouched; the page uses the new `/dashboard/overview` |

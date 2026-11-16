@@ -3,6 +3,8 @@
 Prioritised technical issues and dependencies derived from the Day 1 review (`CORE_DATA_ARCHITECTURE.md` findings **F-xx**).
 No deadlines, estimates or assignees are given: none are supported by evidence in the repository.
 
+> **Historical snapshot:** this issue list reflects the Day 1 review. For the current schema and migration status, use [DATABASE_BASELINE.md](DATABASE_BASELINE.md); statements below about missing constraints or migration mounts may have been superseded.
+
 | Priority | Meaning |
 |---|---|
 | **P0** | Critical reliability or data-integrity risk |
