@@ -82,6 +82,15 @@ def _():
     assert all({"label", "value", "unit", "definition"} <= set(k) for k in d["kpis"])
     open_n = one("SELECT count(*) AS n FROM incidents WHERE status <> 'resolved'")["n"]
     assert next(k for k in d["kpis"] if k["key"] == "open_incidents")["value"] == open_n
+    bars = d["incident_bars"]
+    assert bars and all({"asset_id", "asset_name", "system_type", "resolved", "warning", "critical", "info"}
+                        <= set(row) for row in bars)
+    hvac_bars = client.get("/dashboard/overview", params={"hours": 24, "system_type": "HVAC"}).json()["incident_bars"]
+    assert hvac_bars and all(row["system_type"] == "HVAC" for row in hvac_bars)
+    assert {row["asset_id"]: row for row in bars if row["system_type"] == "HVAC"} == \
+        {row["asset_id"]: row for row in hvac_bars}
+    short_window_bars = client.get("/dashboard/overview", params={"hours": 1}).json()["incident_bars"]
+    assert short_window_bars == bars  # Incident history is not restricted to the telemetry time window.
 
 
 @test("overview: KPI numbers equal the same counts computed straight from the tables")
@@ -231,11 +240,21 @@ def _():
 
 @test("incident lifecycle over HTTP: open -> acknowledged -> resolved; resolved is final (409); unknown -> 404")
 def _():
-    inc_id = client.get("/incidents").json()["incidents"][0]["id"]
+    incident = client.get("/incidents").json()["incidents"][0]
+    inc_id = incident["id"]
+    assert incident["severity"] == "critical"
+    asset_id = one("SELECT asset_id FROM alerts WHERE incident_id=%s ORDER BY first_ts, alert_id LIMIT 1", inc_id)["asset_id"]
+    before = client.get("/dashboard/overview", params={"hours": 1}).json()["incident_bars"]
+    before_bar = next(row for row in before if row["asset_id"] == asset_id)
+    assert before_bar["critical"] >= 1
     r = client.post(f"/incidents/{inc_id}/status", json={"status": "acknowledged"})
     assert r.status_code == 200 and r.json()["status"] == "acknowledged"
     assert client.post(f"/incidents/{inc_id}/status", json={"status": "resolved"}).json()["status"] == "resolved"
     assert one("SELECT count(*) AS n FROM alerts WHERE incident_id=%s AND status <> 'resolved'", inc_id)["n"] == 0
+    after = client.get("/dashboard/overview", params={"hours": 1}).json()["incident_bars"]
+    after_bar = next(row for row in after if row["asset_id"] == asset_id)
+    assert after_bar["resolved"] == before_bar["resolved"] + 1
+    assert after_bar["critical"] == before_bar["critical"] - 1
     assert client.post(f"/incidents/{inc_id}/status", json={"status": "open"}).status_code == 409
     assert client.post("/incidents/999999/status", json={"status": "resolved"}).status_code == 404
     kpi = client.get("/dashboard/overview").json()["kpis"]
