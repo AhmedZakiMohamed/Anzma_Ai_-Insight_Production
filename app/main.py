@@ -12,7 +12,7 @@ import socketio
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
 from psycopg import OperationalError
@@ -53,8 +53,8 @@ def dashboard():
     return FileResponse(os.path.join(STATIC_DIR, "dashboard.html"))
 
 
-def day2_connect():
-    """Open a psycopg2 connection for Ahmed's Day 2 engine."""
+def day2_connect(**options):
+    """Open a psycopg2 connection for Ahmed's Day 2 engine (options, e.g. connect_timeout, go to psycopg2)."""
     return psycopg2.connect(
         host=os.getenv("PGHOST", "localhost"),
         port=os.getenv("PGPORT", "5432"),
@@ -62,12 +62,31 @@ def day2_connect():
         user=os.getenv("PGUSER", "postgres"),
         password=os.getenv("PGPASSWORD", ""),
         cursor_factory=psycopg2.extras.RealDictCursor,
+        **options,
     )
 
 
 @api.get("/health")
 def health():
+    """Liveness only: the process is up. It does not look at the database."""
     return {"status": "ok"}
+
+
+@api.get("/ready")
+def ready():
+    """Readiness: 200 only while the database answers a query, otherwise 503 (no connection details in the reply)."""
+    try:
+        conn = day2_connect(connect_timeout=3)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+                cur.fetchone()
+        finally:
+            conn.close()
+    except DB_ERRORS as exc:
+        logger.warning("readiness check failed: %s", str(exc).strip()[:200])
+        return JSONResponse(status_code=503, content={"status": "not_ready", "database": "down"})
+    return {"status": "ready", "database": "up"}
 
 
 @api.get("/dashboard/filters")

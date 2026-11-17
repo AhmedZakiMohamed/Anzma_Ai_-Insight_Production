@@ -302,6 +302,20 @@ def _():
         os.environ["PGPORT"] = saved
 
 
+@test("readiness: /ready is 200 while the database answers and 503 when it is unreachable; /health stays liveness-only")
+def _():
+    up = client.get("/ready")
+    assert up.status_code == 200 and up.json() == {"status": "ready", "database": "up"}, up.text
+    saved = os.environ["PGPORT"]
+    os.environ["PGPORT"] = "1"
+    try:
+        down = client.get("/ready")
+        assert down.status_code == 503 and down.json() == {"status": "not_ready", "database": "down"}, down.text
+        assert client.get("/health").json() == {"status": "ok"}
+    finally:
+        os.environ["PGPORT"] = saved
+
+
 if __name__ == "__main__":
     ok = 0
     for name, fn in RESULTS:

@@ -27,9 +27,9 @@ USER appuser
 EXPOSE 8000
 
 
-# Python-based healthcheck (no curl needed). /health checks service + DB.
+# Python-based healthcheck (no curl needed). /ready is 200 only while the database answers; /health is liveness only.
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 \
-    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=4).status == 200 else 1)"
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/ready', timeout=4).status == 200 else 1)"
 
 
 # app.main:asgi_app serves the FastAPI application and its plain HTTP routes,
