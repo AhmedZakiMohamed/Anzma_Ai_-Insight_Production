@@ -2,14 +2,14 @@
 {"status":"ok"}
 HTTP 200
 == dashboard/overview
- coverage. Heartbeats occur once per hour, and both the first and last possible heartbeat timestamps are included.","sub":"294 of 300 expected"},{"key":"open_incidents","label":"Open incidents","value":8,"unit":"incidents","sub":"4 critical","definition":"Incidents that are not resolved (open or acknowledged), whatever the selected window or system. An incident groups related alerts."}]}
+ are included.","sub":"294 of 300 expected"},{"key":"open_incidents","label":"Open incidents","value":8,"unit":"incidents","sub":"4 critical","definition":"Incidents that are not resolved (open or acknowledged), whatever the selected window or system. An incident groups related alerts."}]}
 HTTP 200
 == dashboard/summary
-o_data":0,"warning":2,"unknown":0,"normal":9}},"alerts_raised":{"value":10,"unit":"alerts"},"critical_alerts":{"value":4,"unit":"alerts"},"alert_rate_per_hour":{"value":0.1282,"unit":"alerts/hour"},"avg_zone_temp":{"value":17.6405218317359,"unit":"C"},"avg_packet_loss":{"value":0.229105431309904,"unit":"%"},"heartbeat_compliance":{"value":99.16,"unit":"%","received":940,"expected":948}}}
+l_alerts":{"value":4,"unit":"alerts"},"alert_rate_per_hour":{"value":0.1282,"unit":"alerts/hour"},"avg_zone_temp":{"value":17.6405218317359,"unit":"C"},"avg_packet_loss":{"value":0.229105431309904,"unit":"%"},"heartbeat_compliance":{"value":99.16,"unit":"%","received":940,"expected":948}}}
 HTTP 200
 == alerts
-d":"THRESHOLD","severity":"CRITICAL","status":"OPEN","title":"Door forced open - Server Room Reader","summary":"Server Room Reader (Server Room): door reported as forced open.","first_ts":"2026-11-14T19:45:00Z","last_ts":"2026-11-14T19:45:00Z","detected_ts":"2026-11-14T19:45:00Z","incident_id":1,"asset_id":7,"asset_name":"Server Room Reader","zone":"Server Room","system_type":"ACCESS"}]}
+,"summary":"Server Room Reader (Server Room): door reported as forced open.","first_ts":"2026-11-14T19:45:00Z","last_ts":"2026-11-14T19:45:00Z","detected_ts":"2026-11-14T19:45:00Z","incident_id":1,"asset_id":7,"asset_name":"Server Room Reader","zone":"Server Room","system_type":"ACCESS"}]}
 HTTP 200
 == incidents
-ilding":"Main Tower","alert_ids":[3],"rank":7},{"id":2,"title":"Camera offline too long - Control Room Camera at Control Room","severity":"warning","status":"open","first_ts":"2026-11-15T00:45:00+00:00","last_ts":"2026-11-15T01:45:00+00:00","grouping_rule":"same_asset_or_system_within_15_min","location_id":4,"zone":"Control Room","building":"Data Center Annex","alert_ids":[2],"rank":8}]}
+om Camera at Control Room","severity":"warning","status":"open","first_ts":"2026-11-15T00:45:00+00:00","last_ts":"2026-11-15T01:45:00+00:00","grouping_rule":"same_asset_or_system_within_15_min","location_id":4,"zone":"Control Room","building":"Data Center Annex","alert_ids":[2],"rank":8}]}
 HTTP 200

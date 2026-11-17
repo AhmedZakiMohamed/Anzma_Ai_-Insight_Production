@@ -1,3 +1,5 @@
+> **HISTORICAL - superseded.** Latest verified results (commit 740eae7): [DAY2_TEST_RESULTS.md](DAY2_TEST_RESULTS.md). Kept for history only.
+
 # Day 2 Runtime Verification and Test Results
 
 **Date:** 2026-11-16 (Africa/Cairo)  

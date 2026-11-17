@@ -1,3 +1,5 @@
+HISTORICAL - superseded by docs/DAY2_TEST_RESULTS.md (commit 740eae7). Kept for history only.
+
 Anzma Platform - Day 3 integration verification
 Execution date: 2026-11-12 (output supplied by Amr)
 Runtime: Docker Compose API container; frontend API suite creates isolated database anzma_api_test.

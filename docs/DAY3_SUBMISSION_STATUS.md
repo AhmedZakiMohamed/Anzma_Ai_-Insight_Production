@@ -1,3 +1,5 @@
+> **HISTORICAL - superseded.** Latest verified results (commit 740eae7): [DAY2_TEST_RESULTS.md](DAY2_TEST_RESULTS.md). Kept for history only.
+
 # Day 3 submission status
 
 ## Verified on 2026-11-12

@@ -12,10 +12,8 @@ PASS  GET /alerts/{id}: evidence rows carry source references; unknown id -> 404
 PASS  incidents: list, evidence verified, explanation grounded; the page's three calls work together
 PASS  incident lifecycle over HTTP: open -> acknowledged -> resolved; resolved is final (409); unknown -> 404
 PASS  alerts and tampered evidence: a changed fact row is reported as unverified by the explain call
-FAIL  chat widget: suggested questions; HVAC question answered from evidence; incident list; unsupported topic is said plainly 
-      -> AssertionError: 
+PASS  chat widget: suggested questions; HVAC question answered from evidence; incident list; unsupported topic is said plainly
 PASS  pages: / and /dashboard serve the dashboard; /static files are served; /health answers
 PASS  database down: every page endpoint answers 503 with a message instead of crashing
 
-16/17 passed
-
+17/17 passed

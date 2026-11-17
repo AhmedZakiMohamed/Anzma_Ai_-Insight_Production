@@ -1,3 +1,5 @@
+> **HISTORICAL - superseded.** Latest verified results (commit 740eae7): [DAY2_TEST_RESULTS.md](DAY2_TEST_RESULTS.md). Kept for history only.
+
 # Baseline Test Report — Anzma AI Insight Core
 
 **Baseline source:** Submission repository, `final` branch

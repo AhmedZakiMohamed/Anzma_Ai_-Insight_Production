@@ -1,37 +1,48 @@
 # DAY2_IMPLEMENTATION_REPORT.md
-Schema, constraints, limitations and decisions live in [DATABASE_BASELINE.md](DATABASE_BASELINE.md); this file records **what was changed in Ahmed's session and how he reports it was tested**. See [DAY2_TEST_RESULTS.md](DAY2_TEST_RESULTS.md) for his reported outputs. Older Day 2 notes: `day2_ahmed/DAY2_AHMED_HANDOVER.md`.
 
-## 1. Starting state (inspected, not assumed)
-Branch `final`, HEAD `87e084d`. Pre-existing local changes, all preserved untouched: staged `app/chat_facts.py`, `app/chat_lite.py`, `docker-compose.yml` (Amr: adds the 004 mount and `OLLAMA_HOST` default); untracked `004_chat_views.sql`; 2 stashes. None of C1–C4 existed (no 005, no integrity test, no docs).
+What was changed, in which commit, and by whom, using the pushed repository structure. Schema decisions live in [DATABASE_BASELINE.md](DATABASE_BASELINE.md); verified results in [DAY2_TEST_RESULTS.md](DAY2_TEST_RESULTS.md); the response to the Day 2 review in [DAY2_CORRECTION_REPORT.md](DAY2_CORRECTION_REPORT.md).
 
-## 2. Changes made in this session
-| Item | File | Kind |
-|---|---|---|
-| C1 | `db/migrations/005_alert_uniqueness.sql` | new: duplicate guard + `CREATE UNIQUE INDEX IF NOT EXISTS uq_alerts_rule_asset_first_ts` |
-| C1 | `day2_ahmed/db_adapter.py` `store_alerts` | modified: `INSERT … ON CONFLICT (rule_id, asset_id, first_ts) DO NOTHING RETURNING alert_id` |
-| C1 | `App.py` `POST /alerts` | **reviewed, unchanged**: already returns 409 when `store_alerts` returns no id (now DB-guaranteed); only `HTTPException` is re-raised and DB errors keep mapping to 503, so unrelated errors are not misclassified as 409 |
-| C2 | `day2_ahmed/test_data_integrity.py` | new: 18 tests on throw-away DB `anzma_integrity_test` |
-| C4 | `day2_ahmed/test_day2_integration.py` | modified: bootstrap applies 004 then 005 (each twice) after the 003 snapshot |
-| C4 | `test_frontend_api.py` | modified: applies 003, 004, 005 |
-| Audit fix | `day2_ahmed/e2e_s1.py` | modified: DB build now applies 003, 004, 005 (needed by the new `store_alerts`) |
-| Docs fix | `DATA_MODEL.md`, `data-model.sql` | modified: DRAFT / NOT AUTHORITATIVE banner only |
-| C3 | `verify_schema.sql`, `DATABASE_BASELINE.md`, `DAY2_IMPLEMENTATION_REPORT.md`, `DAY2_HANDOVER.md` | new |
-After Ahmed's reported test run, Amr moved migrations 003–005 into `db/migrations/`, updated Compose init mounts and test bootstrap paths, and retained the single base schema at `db/init/anzma_schema_and_seed.sql`. This integration has **not** been executed against a clean Compose install in this checkout. Bandwidth thresholds and any commit/push remain untouched.
+## 1. Pushed structure (old path to current path)
+
+| Old | Current |
+|---|---|
+| `App.py` | `app/main.py` |
+| `app/chat_lite.py`, `chat_facts.py`, `frontend_api.py` | `app/api/` |
+| `day2_ahmed/db_adapter.py` | `app/adapters/database/db_adapter.py` |
+| `day2_ahmed/ai_explainer.py` | `app/adapters/model_providers/ai_explainer.py` |
+| `day2_ahmed/alert_engine.py`, `alert_config.py` | `app/domain/alerts/` |
+| `day2_ahmed/incident_engine.py` | `app/domain/incidents/` |
+| `day2_ahmed/evidence.py`, `validation.py` | `app/domain/evidence/` |
+| `day2_ahmed/recommendations.py` | `app/domain/ai/recommendations.py` |
+| `day2_ahmed/integrity_rules.py` | `app/domain/operations/integrity_rules.py` |
+| `day2_ahmed/pipeline.py` | `app/services/pipeline.py` |
+| `app/dashboard_core_pg.py` | `app/repositories/dashboard_core_pg.py` |
+| `day2_ahmed/test_*.py`, `e2e_s1.py` | `tests/unit/`, `tests/integration/`, `tests/scenarios/` |
+| `day2_ahmed/migrations/003_incidents.sql` | `db/migrations/003_incidents.sql` (004, 005 alongside) |
+| `Dockerfile`, `docker-compose.yml` | `deploy/compose/` |
+
+## 2. Changes and authors
+
+| Change | Files (current paths) | Commit | Author |
+|---|---|---|---|
+| C1: alert uniqueness: migration 005 and `INSERT ... ON CONFLICT DO NOTHING` in `store_alerts` | `db/migrations/005_alert_uniqueness.sql`, `app/adapters/database/db_adapter.py` | session of `87e084d` (imported in `73baaf7`) | Ahmed |
+| C2: data integrity tests (18) | `tests/integration/test_data_integrity.py` | same | Ahmed |
+| C3: schema verification and baseline docs | `scripts/verify_schema.sql`, `docs/DATABASE_BASELINE.md` | same | Ahmed |
+| C4: test bootstraps apply 003, 004, 005 | `tests/integration/test_day2_integration.py`, `test_frontend_api.py`, `tests/scenarios/e2e_s1.py` | same | Ahmed |
+| Chat views (004), Compose init mounts, `OLLAMA_HOST` default | `db/migrations/004_chat_views.sql`, `deploy/compose/docker-compose.yml`, `app/api/chat_*.py` | same | Amr |
+| Repository restructure and Compose/Dockerfile moves | whole tree | `73baaf7`, `72d9bcf` | Amr |
+| Fix `ai_explainer` import so the API starts; pip timeout | `app/domain/ai/recommendations.py`, `app/domain/incidents/incident_engine.py`, `deploy/compose/Dockerfile` | `b26b324` | Ahmed |
+| Test path fixes after the restructure | `tests/integration/*.py` | `ff028d0`, `740eae7` | Ahmed |
+| Fix stale imports hidden by a broad `except` (regression, 16/17 to 17/17) | `app/api/chat_lite.py` | `740eae7` | Ahmed |
 
 ## 3. Migration history
-base → 003 (incidents) → 004 (chat views; was untracked) → 005 (alert uniqueness, this session). Idempotent each; no runner.
+
+base (`db/init/anzma_schema_and_seed.sql`) to 003 (incidents) to 004 (chat views) to 005 (alert uniqueness). Each is idempotent; there is no migration runner. Verified on the running database: see DATABASE_BASELINE.md section 7.
 
 ## 4. Tests
-Freshly executed by Ahmed: 25/25, 43/43, 18/18, 17/17 = **103/103 PASS**, `verify_schema.sql` OVERALL OK. Commands, logs and caveats: [DAY2_TEST_RESULTS.md](DAY2_TEST_RESULTS.md). Not run: `e2e_s1.py`, `test_dashboard.py`, live Ollama, compose clean install with 005.
 
-## 5. Ownership
-| Area | Owner | Status |
-|---|---|---|
-| Authoritative schema, migration order, DATABASE_BASELINE.md, 005, integrity tests, verify_schema.sql, test bootstraps, draft-schema labels | Ahmed | written and tested (103/103) |
-| docker-compose.yml (005 mount), runtime/startup, RUNTIME_VERIFICATION.md, readiness check, live Qwen vs fallback test, README/RUN_DEMO schema sentences, `test_chat_consistency`, demo recording | Amr | not started by me; instructions in DAY2_HANDOVER.md |
-| Bandwidth thresholds/unit (C5) | Eng. Mohsen / Amr | decision pending; nothing changed |
-| Data clock / demo-data strategy | Amr | decision pending; nothing changed |
-| Removal of legacy `alert_engine.store_alerts` | Ahmed (separate change) | proposed |
+Latest verified results (commit `740eae7`): 25 + 43 + 18 + 17 + 31 = **134/134 PASS**, `verify_schema.sql` OVERALL OK, live Qwen explanation and fallback demonstrated. Details, commands and the items not executed: [DAY2_TEST_RESULTS.md](DAY2_TEST_RESULTS.md).
 
-## 6. Not done / limitations
-Nothing was committed. Tests were executed on Ahmed's machine (see DAY2_TEST_RESULTS.md); `e2e_s1.py` was not. C5, data clock, migration runner, `source_event_id`, `received_at`, and the 12 proposed entities are deliberately out of scope.
+## 5. Not done / limitations
+
+Readiness endpoint with database status, Compose-container Ollama path, `e2e_s1.py` and `test_dashboard.py` on this commit, and the demo recording are open (see the correction report). Bandwidth unit (C5), data-clock strategy, migration runner and the proposed new entities remain out of scope.

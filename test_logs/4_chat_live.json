@@ -1,0 +1,19 @@
+{
+    "answer": "The building is currently facing several critical issues:\n\n1. **Access Control**: A door in the Server Room has been forced open.\n2. **Networking**: The network link for Core Switch 1 in the Server Room has gone down, and there is also sustained packet loss.\n3. **Fire Alarm**: Smoke has been detected in the Server Room.\n4. **HVAC**: The temperature in CRAC Unit 1 serving Cold Aisle A has peaked above the warning threshold.\n\nThese issues should be addressed immediately to ensure the safety and functionality of the building. \n\nWould you like more details on any of these alerts or suggestions on what to check first?",
+    "language": "en",
+    "source": "OLLAMA",
+    "grounding": {
+        "passed": true
+    },
+    "sources": [
+        {
+            "ref": "Q1",
+            "text": "SELECT * FROM v_alert_overview WHERE severity = 'critical' AND status = 'open'  ->  5 rows"
+        }
+    ],
+    "data_sufficient": true,
+    "window": null,
+    "session_state": {
+        "last_assets": []
+    }
+}
