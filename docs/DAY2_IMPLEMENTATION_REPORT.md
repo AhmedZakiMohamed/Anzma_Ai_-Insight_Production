@@ -41,8 +41,8 @@ base (`db/init/anzma_schema_and_seed.sql`) to 003 (incidents) to 004 (chat views
 
 ## 4. Tests
 
-Latest verified results (commit `740eae7`): 25 + 43 + 18 + 17 + 31 = **134/134 PASS**, `verify_schema.sql` OVERALL OK, live Qwen explanation and fallback demonstrated. Details, commands and the items not executed: [DAY2_TEST_RESULTS.md](DAY2_TEST_RESULTS.md).
+Latest automated verification (tested application commit `ab88f5f`): 25 + 43 + 18 + 18 + 31 = **135/135 PASS**; `verify_schema.sql` OVERALL OK; readiness PASS; S1 scenario 14/14; dashboard summary PASS. Deterministic fallback passed. Live Qwen evidence is historical from `740eae7` and was not rerun on `ab88f5f`. Details, commands and the items not executed: [DAY2_TEST_RESULTS.md](DAY2_TEST_RESULTS.md).
 
 ## 5. Not done / limitations
 
-Readiness endpoint with database status, Compose-container Ollama path, `e2e_s1.py` and `test_dashboard.py` on this commit, and the demo recording are open (see the correction report). Bandwidth unit (C5), data-clock strategy, migration runner and the proposed new entities remain out of scope.
+Live Qwen verification on `ab88f5f`, the Compose-container Ollama path, and the demo recording remain open (see the correction report). `e2e_s1.py`, `test_dashboard.py`, and readiness are verified on `ab88f5f`. Bandwidth unit (C5), data-clock strategy, migration runner and the proposed new entities remain out of scope.

@@ -1,1 +1,11 @@
-f4739fb9a2a93a4aad6f352e81aaff8a4e3ae3f9
+Tested application source commit: ab88f5f9c9b433b1c2caafa22ec31f02bfda6fda
+Branch: main
+Working tree at test time: clean
+Test date: 2026-11-17 (Africa/Cairo)
+Test results: docs/DAY2_TEST_RESULTS.md
+Run summary: test_logs/ab88f5f_verification_summary.txt
+
+Commit 5c3ffb919c06a7f3e49124c26ee456b299fac03d is a later documentation-only sync of docs/README.md.
+No application, tests, deployment, database, scripts, or dependency files changed between the tested source commit and that documentation commit.
+
+Older unprefixed test_logs files are historical evidence from earlier runs; do not attribute them to the tested source commit above.

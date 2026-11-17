@@ -1,6 +1,6 @@
 # DATABASE_BASELINE.md — single source of truth for the Anzma database
 
-Status legend: paths below are checked in the current working tree. Latest verified results: commit 740eae7 (2026-11-17), see DAY2_TEST_RESULTS.md. Related: [DAY2_IMPLEMENTATION_REPORT.md](DAY2_IMPLEMENTATION_REPORT.md), [DAY2_TEST_RESULTS.md](DAY2_TEST_RESULTS.md).
+Status legend: paths below are checked in the current working tree. Current test report: tested application commit ab88f5f (2026-11-17), see DAY2_TEST_RESULTS.md. Related: [DAY2_IMPLEMENTATION_REPORT.md](DAY2_IMPLEMENTATION_REPORT.md), [DAY2_TEST_RESULTS.md](DAY2_TEST_RESULTS.md).
 
 ## 1. Authoritative architecture
 
@@ -11,7 +11,7 @@ PostgreSQL 16 (Docker Compose, `postgres:16`). **13 tables + 5 views.** The auth
 | 1 | `db/init/anzma_schema_and_seed.sql` | 12 tables (reference, facts, alerts, scenario_runs) + seed | tracked; clean install exit 0 (evidence) |
 | 2 | `db/migrations/003_incidents.sql` | `incidents`, `alerts.incident_id`, 3 indexes | present; idempotent by design |
 | 3 | `db/migrations/004_chat_views.sql` | 5 views `v_*` | present; idempotent by design |
-| 4 | `db/migrations/005_alert_uniqueness.sql` | UNIQUE index `uq_alerts_rule_asset_first_ts` | present; VERIFIED on the running database: index uq_alerts_rule_asset_first_ts exists, verify_schema.sql OVERALL OK (commit 740eae7, 2026-11-17, test_logs/1_verify_schema.txt) |
+| 4 | `db/migrations/005_alert_uniqueness.sql` | UNIQUE index `uq_alerts_rule_asset_first_ts` | present; VERIFIED on the running database: index uq_alerts_rule_asset_first_ts exists, verify_schema.sql OVERALL OK (commit ab88f5f, 2026-11-17, test_logs/ab88f5f_verification_summary.txt) |
 
 Not authoritative: `data-model.sql` (22-table draft, not loaded by Compose). `db/init/anzma_schema_and_seed.sql` is the single bootstrap schema-and-seed file; tests use this path directly.
 
@@ -51,13 +51,13 @@ Other limitations: telemetry/event tables have no `received_at`, `source`, `qual
 
 ## 7. Clean install and deployment
 
-1. Compose (`docker compose up`) runs init files only on an **empty** volume, in filename order. The current working-tree `docker-compose.yml` mounts the base schema (01), then migrations 003, 004, and 005 (02–04). Clean install run on commit 740eae7 in a separate Compose project (anzma-clean, fresh volume) on 2026-11-17: verify_schema.sql OVERALL OK, 13 tables, 5 views, all test suites pass (see DAY2_TEST_RESULTS.md).
+1. Compose (`docker compose up`) runs init files only on an **empty** volume, in filename order. The current `docker-compose.yml` mounts the base schema (01), then migrations 003, 004, and 005 (02–04). Clean install run on application commit `ab88f5f` in isolated project `anzma-ab88-verify` with a fresh volume on 2026-11-17: `verify_schema.sql` OVERALL OK, 13 tables, 5 views, and the five suites pass (see [DAY2_TEST_RESULTS.md](DAY2_TEST_RESULTS.md)).
 
 2. Existing databases (volume already initialised) are not re-run by Compose: apply any missing migration manually with `psql -f`. **Apply 005 before running the updated `store_alerts` code against an existing DB**: PostgreSQL requires the matching unique index for its `ON CONFLICT` clause. Confirmed: the running database contains 005 (index present).
 
 3. 005 aborts with a clear message if duplicates exist (it never deletes data).
 
-4. Verify any database (read-only): `psql -U <user> -d <db> -f verify_schema.sql` → every row `OK`, final row `OVERALL OK`. **EXECUTED: OVERALL OK** (`test_logs/5_verify.txt`).
+4. Verify any database (read-only): `psql -U <user> -d <db> -f verify_schema.sql` → every row `OK`, final row `OVERALL OK`. **EXECUTED on the fresh test volume: OVERALL OK** (see [`test_logs/ab88f5f_verification_summary.txt`](../test_logs/ab88f5f_verification_summary.txt)).
 
 ## 8. Deferred (not implemented)
 
@@ -65,18 +65,18 @@ Other limitations: telemetry/event tables have no `received_at`, `source`, `qual
 
 ## 9. Test status
 
-Latest verified (commit 740eae7, 2026-11-17): 25 + 43 + 18 + 17 + 31 = 134/134 PASS; verify_schema.sql OVERALL OK; see DAY2_TEST_RESULTS.md. The earlier 103/103 on 87e084d is historical. Not covered: Compose-container Ollama path, e2e_s1.py, test_dashboard.py.
+Latest verified (tested application commit `ab88f5f`, 2026-11-17): 25 + 43 + 18 + 18 + 31 = **135/135 PASS**; schema `OVERALL OK`; readiness PASS; `e2e_s1.py` PASS 14/14; read-only `test_dashboard.py` PASS. The earlier 103/103 on `87e084d` and 134/134 on `740eae7` are historical. Live Ollama inference and the Compose-container Ollama model-pull path were not verified on `ab88f5f`. See [DAY2_TEST_RESULTS.md](DAY2_TEST_RESULTS.md).
 
 ## 10. Task 3 analysis (static audit of code and Ahmed's reported evidence)
 
-The path consolidation in §1 and §7 was verified on commit 740eae7 (2026-11-17): a fresh Compose install was executed in a separate Compose project (anzma-clean, fresh volume), and the running database was verified to contain migration 005. See DAY2_TEST_RESULTS.md and test_logs/1_verify_schema.txt.
+The path consolidation in §1 and §7 was verified on application commit ab88f5f (2026-11-17): a fresh Compose install was executed in a separate project (anzma-ab88-verify, fresh volume), and the database was verified to contain migration 005. See DAY2_TEST_RESULTS.md and test_logs/ab88f5f_verification_summary.txt.
 
 | Topic | What the code/schema actually does | Minimum change for Core v0.1 |
 |---|---|---|
 | Source / asset identification | Asset = `assets.asset_id` (numeric, what the API uses) + `asset_code` (UNIQUE, e.g. `HVAC-AHU-01`) + `name`. No vendor/external id; no `source` on telemetry, events or alerts. Manual origin is only visible in `event_records.details` (`manual test`) and `alerts.evidence.source = "manual"`. | None now. Treat `asset_code` as the stable external key. `asset_external_ids` / `data_sources` stay PROPOSED. |
 | Timestamps | All `ts` columns are `TIMESTAMPTZ`; `db_adapter` converts to UTC; no `received_at` (cannot tell event time from arrival time). | None now (`received_at` deferred until a connector exists). |
 | Measurement consistency | `metric_types.unit` holds the unit; telemetry CHECK rejects NaN/±Infinity. `bandwidth_util` is `%` (15.57–72.32) but `alert_config` thresholds are 900/980 and the anomaly rule in `alert_engine.py` labels it `Mbps` → unit mismatch also in labels (C5). | None (C5 pending Eng. Mohsen/Amr). |
-| Duplicate prevention | telemetry UNIQUE(asset,metric,ts); events UNIQUE(asset,event_type,ts) and `POST /events` uses `ON CONFLICT DO NOTHING` → HTTP 409; alerts: **005**. Incidents: grouping logic in `incident_engine.py`, no DB uniqueness. | 005 is in the clean-install sequence and VERIFIED on the running database: index uq_alerts_rule_asset_first_ts exists (commit 740eae7, 2026-11-17). Clean-install verification also passed; see DAY2_TEST_RESULTS.md. |
+| Duplicate prevention | telemetry UNIQUE(asset,metric,ts); events UNIQUE(asset,event_type,ts) and `POST /events` uses `ON CONFLICT DO NOTHING` → HTTP 409; alerts: **005**. Incidents: grouping logic in `incident_engine.py`, no DB uniqueness. | 005 is in the clean-install sequence and VERIFIED on the running database: index uq_alerts_rule_asset_first_ts exists (commit ab88f5f, 2026-11-17). Clean-install verification also passed; see DAY2_TEST_RESULTS.md. |
 | Compatibility rules | `*_compat` tables are not enforced by the DB. `POST /events` enforces event/system compatibility in code; no code path inserts telemetry (only the seed does). | None; pinned by a test. |
 | Equipment state | Not stored. Computed at query time: `v_asset_overview.health_24h` = critical > no_data > warning > normal over the 24 h before the data clock; cameras by latest `camera_offline` vs `camera_online` (`v_camera_status`). | None. `asset_state_current` stays PROPOSED. |
 | Freshness | "Now" = `max(ts)` of telemetry/events (`v_data_clock`, `da.latest_ts`), never the wall clock; `no_data` and the 20-min reading-gap rule (`reading_gap_min=20`) depend on it. A manual event moves the clock (§5). | None; decision pending (§5). |

@@ -1,55 +1,35 @@
 # Runtime Verification — Day 2
 
-## Current Verification — Commit `740eae7`
+## Current Verification — Tested Application Commit `ab88f5f`
 
-**Verification date:** 2026-11-17 (Africa/Cairo)  
-**Tested commit:** `740eae72bafaf112f373cbdd8802a66b04de5004`  
-**Branch:** `import/core-baseline-87e084d`  
-**Machine:** MacBook Pro (Apple Silicon), Docker Desktop  
-**Target:** Anzma AI Insight Core — `http://localhost:8000`  
-**Installation:** Fresh Docker Compose project `anzma-clean` with an empty database volume.  
-**Model path:** Ollama running natively on the Mac (`qwen2.5:7b`), accessed through `docker-compose.override.yml` using `OLLAMA_HOST=http://host.docker.internal:11434`.
+**Verification date:** 2026-11-17 (Africa/Cairo)
+**Tested source commit:** `ab88f5f9c9b433b1c2caafa22ec31f02bfda6fda`
+**Branch and worktree at test time:** `main`, clean
+**Environment:** MacBook Pro (Apple Silicon), Docker Desktop; PostgreSQL 16 and Python 3.11 in the API container.
+**Installation:** Fresh isolated Compose project `anzma-ab88-verify` with a new empty PostgreSQL volume. Only DB and API services were started; a local override removed host port bindings.
+**Current evidence:** [`DAY2_TEST_RESULTS.md`](DAY2_TEST_RESULTS.md) and [`test_logs/ab88f5f_verification_summary.txt`](../test_logs/ab88f5f_verification_summary.txt).
 
-**Commit evidence:** `test_logs/COMMIT.txt`  
-**Full test report:** `DAY2_TEST_RESULTS.md`
-
-### Source and environment
-
-- The current verification targets commit `740eae72bafaf112f373cbdd8802a66b04de5004`.
-- The application was tested using a fresh Compose project named `anzma-clean` with an empty database volume.
-- Ollama was running natively on the Mac, using model `qwen2.5:7b`.
-- The API accessed Ollama through the local Compose override.
-- The evidence files listed below are retained under `test_logs/`.
+Commit `5c3ffb9` was created afterward to sync `docs/README.md`. It changed no application, test, deployment, database, script, or dependency files; it is a documentation-only follow-up, not a second tested application version.
 
 ### Results
 
-| Check | Result | Evidence |
-|---|---|---|
-| Services started (`docker compose ps`) | **Pass** | `test_logs/2_ps.txt` |
-| Application liveness (`GET /health`) | **Pass** — HTTP 200; liveness only | `test_logs/2_health.txt` |
-| Dashboard overview, summary, alerts and incidents | **Pass** — HTTP 200 | `test_logs/2_endpoints.txt` |
-| Database schema verification | **Pass** — `OVERALL OK` | `test_logs/1_verify_schema.txt` |
-| Assistant live-model path (`use_llm=true`) | **Pass** — `source: OLLAMA` | `test_logs/4_chat_live.json` |
-| Live explanation of a stored alert | **Pass** — `ai_source: llm`, `model_used: qwen2.5:7b` | `test_logs/5_explain_live_alert7.json` |
-| Model loaded in Ollama | **Pass** | `test_logs/5_ollama_ps.json` |
-| Deterministic fallback, tested separately | **Pass** — `ai_source: fallback` | `test_logs/5_explain_fallback_alert7.json` |
-| Database readiness distinct from liveness | **Partial** — `/health` does not report database status; Compose waits for the database healthcheck, and database-down returns HTTP 503 on page endpoints (see test results section 6) | `DAY2_TEST_RESULTS.md`, section 6 |
-| Ollama running inside a Compose container | **Not executed** — model pull was blocked/stuck on the available network | Not applicable |
+| Check | Result |
+|---|---|
+| Unit / Day 2 integration / data integrity / frontend API / chat consistency | **Pass — 135/135 total** |
+| Schema verification | **Pass — OVERALL OK**, 13 tables, 5 views, migration 005 unique index present |
+| `/ready` database dependency | **Pass** — 200 with DB up, 503 with DB down; `/health` remains liveness-only |
+| S1 pipeline scenario | **Pass — 14/14**, 14/14 evidence rows verified, deterministic fallback and recommendations |
+| Read-only dashboard summary | **Pass**; invoked with `PYTHONPATH=/app` |
+| Live Ollama explanation on this source commit | **Not run**; prior live evidence belongs to `740eae7` |
+| Ollama Compose model-pull path | **Not run** |
 
-### Important implementation note
+The test summary records the exact commands and the local port-isolation override. Historical unprefixed logs under `test_logs/` belong to earlier runs and are not represented as output from `ab88f5f`.
 
-The earlier commit `72d9bcf` does not start successfully because of:
+### Verification limits
 
-`ModuleNotFoundError: ai_explainer`
-
-Commit `b26b324` contains the fix for this import issue.
-
-### Verification limitations
-
-- The `/health` endpoint confirms application liveness, not complete database readiness.
-- The Compose-based Ollama model-pull path was not verified because the model pull was blocked on the available network.
-- The live AI verification used Ollama running natively on the Mac, not an Ollama container.
-- The full test report contains the detailed commands and results.
+- The S1 explanation used the deterministic fallback; this run does not prove live model inference.
+- The grounding validator checks supported values, times, references, causes, and playbook actions, but is not a semantic correctness check of model wording.
+- No browser walkthrough recording was captured in this run.
 
 ---
 
@@ -59,8 +39,8 @@ Commit `b26b324` contains the fix for this import issue.
 
 The following section preserves the previous runtime verification report for traceability. Its results belong to the earlier revision and must not be interpreted as results for commit `740eae7`.
 
-**Verification date:** 2026-11-16 (Africa/Cairo)  
-**Target:** Anzma AI Insight Core, accessed at `http://localhost:8000`  
+**Verification date:** 2026-11-16 (Africa/Cairo)
+**Target:** Anzma AI Insight Core, accessed at `http://localhost:8000`
 **Method:** Read-only HTTP checks against the already running application. Docker was not opened, and no services were restarted.
 
 ## Source and environment

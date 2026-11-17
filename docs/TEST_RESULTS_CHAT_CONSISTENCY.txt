@@ -1,4 +1,4 @@
-HISTORICAL - superseded by docs/DAY2_TEST_RESULTS.md (commit 740eae7). Kept for history only.
+HISTORICAL - superseded by docs/DAY2_TEST_RESULTS.md (tested application commit ab88f5f). Kept for history only.
 
 Chat vs dashboard consistency test - http://localhost:8000 - window 24 h
 Execution date: 2026-11-12 (output supplied by Amr)

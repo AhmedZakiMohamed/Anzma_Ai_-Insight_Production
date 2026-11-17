@@ -1,40 +1,27 @@
 # Day 2 Joint Correction Report
 
-Response to the Day 2 review of 2026-11-17. Code under test: `740eae72bafaf112f373cbdd8802a66b04de5004`. All results are in [DAY2_TEST_RESULTS.md](DAY2_TEST_RESULTS.md); raw logs are in `test_logs/`.
+This report tracks the CEO's Day 2 acceptance items against the current verification. The detailed results and commands are in [DAY2_TEST_RESULTS.md](DAY2_TEST_RESULTS.md); the tested source commit and execution summary are in [`test_logs/COMMIT.txt`](../test_logs/COMMIT.txt) and [`test_logs/ab88f5f_verification_summary.txt`](../test_logs/ab88f5f_verification_summary.txt).
 
-## 1. Commit reference
+## Tested revision
 
-| Commit | Author | Content |
-|---|---|---|
-| `72d9bcf` | Amr | Productize Core repository structure (the pushed baseline; it does not start: `ModuleNotFoundError: ai_explainer`) |
-| `b26b324` | Ahmed | Fix `ai_explainer` import path; Dockerfile pip timeout |
-| `ff028d0` | Ahmed | Test path fixes after the restructure; first runtime logs |
-| `740eae7` | Ahmed | Fix `chat_lite` imports and remaining test paths (**tested commit**) |
+The application and tests were verified on commit `ab88f5f9c9b433b1c2caafa22ec31f02bfda6fda` (`ab88f5f`), with a clean worktree and a fresh isolated PostgreSQL volume. Commit `5c3ffb9` followed with a documentation-only sync of `docs/README.md`; the application, tests, deployment, database, scripts, and dependencies did not change between those commits.
 
-Documentation and logs are committed after `740eae7`. Check with `git diff --stat 740eae7 HEAD -- app tests deploy db scripts requirements.txt` (must be empty).
+## Acceptance items
 
-## 2. Review points and responses
+| # | CEO item | Current result | Evidence / follow-up |
+|---|---|---|---|
+| 1 | Regression: 16/17 frontend tests | **PASS on tested source** — 135/135 checks across the five suites; frontend API 18/18. The original failure was a stale import in `chat_lite.py`, fixed in `740eae7`. | `DAY2_TEST_RESULTS.md` sections 2–3 and the current verification summary. The new incident chart has no dedicated automated assertion or browser recording in this run; track that separately if acceptance requires visual proof. |
+| 2 | Live AI explanation of a stored alert, plus separate fallback | **PARTIAL** — deterministic fallback passed on `ab88f5f`. Recorded live Qwen responses are from `740eae7`, not the tested source revision. | Re-run and capture live Ollama explanation on the tested source, including model, verified evidence, validation outcome, and actions. Compose Ollama model pull also remains unverified. |
+| 3 | Consistent release/test revision | **PASS for tested source** — one application source commit is identified; subsequent `5c3ffb9` changed only documentation. | `test_logs/COMMIT.txt`, `DAY2_TEST_RESULTS.md` section 1, and the current verification summary. |
+| 4 | Fresh install and application readiness, including database dependency | **PASS** — fresh isolated Compose volume, schema verification `OVERALL OK`, `/ready` 200 with DB up and 503 with DB down, `/health` remains liveness-only. | `DAY2_TEST_RESULTS.md` section 2 and the verification summary. The test stack used the host-independent DB/API services; Ollama was not started. |
+| 5 | One authoritative test report, with failures and partial checks explicit | **PASS** — `DAY2_TEST_RESULTS.md` is the authoritative test report; older reports and unprefixed logs are identified as historical. | Current source commit and remaining AI/visual proof limitations are stated explicitly. |
 
-| # | Review point | Action | Owner | Status | Evidence |
-|---|---|---|---|---|---|
-| 1 | Regression 16/17 | Root cause: stale imports in `chat_lite.py` hidden by a broad `except`. Fixed; full suite rerun: 134/134 | Ahmed (fix, rerun); Amr (review of `chat_lite.py`) | **Closed** (review pending) | `3_frontend.txt`; test results section 4 |
-| 2 | Live AI on a stored alert | Alerts 7 and 8 explained by `qwen2.5:7b` with verified evidence, `grounding_supported`, action `HVAC_VERIFY`; fallback shown separately | Ahmed (run); Amr (approver identity) | **Closed** (approver pending) | `5_explain_*`, `5_ollama_ps.json`, `4_chat_live.json` |
-| 3 | Release consistency | One tested commit `740eae7`; older evidence marked historical | Ahmed; both confirm baseline | **Closed** | `COMMIT.txt`; test results section 8 |
-| 4 | Clean install and readiness | Fresh-volume install, `verify_schema` OVERALL OK, all suites pass. Readiness endpoint with database status not implemented | Ahmed (install); Amr (readiness decision) | **Partial** | `2_ps.txt`, `2_health.txt`, `1_verify_schema.txt` |
-| 5 | One authoritative test report | `DAY2_TEST_RESULTS.md` is the only current report; older reports carry a "historical" banner; failures and non-executed items are listed | Ahmed | **Closed** | test results sections 2, 7, 8 |
-
-## 3. Responsibilities
+## Responsibilities and open follow-up
 
 | Area | Owner |
 |---|---|
-| Schema, migrations, integrity tests, `verify_schema.sql`, test bootstraps, test results, DATABASE_BASELINE | Ahmed |
-| Repository structure, Compose and runtime, `chat_lite`/`main.py` review, readiness endpoint, RUN_DEMO/README, demo recording | Amr |
-| Decisions: default `OLLAMA_MODEL`, readiness endpoint, Compose-Ollama path | Amr and Ahmed |
+| Schema, migrations, integrity tests, schema verification, test bootstraps, and test results | Ahmed |
+| Repository structure, Compose/runtime, readiness, dashboard documentation, and demo recording | Amr |
+| Default model decision, Compose Ollama path, and playbook approver identity | Ahmed and Amr |
 
-## 4. Still open before the Friday milestone
-
-- Demo recording: dashboard, one completed workflow with verified evidence and the assistant response, live Qwen shown separately.
-- Readiness endpoint that reports database status (not implemented; recorded as PARTIAL).
-- Compose-container Ollama path not executed (network); only the host-Ollama configuration is verified.
-- `e2e_s1.py` and `test_dashboard.py` not run on this commit.
-- `RUN_DEMO.md` lists the test commands without `test_data_integrity.py`.
+Before describing Day 2 as fully accepted, demonstrate a live explanation of a stored alert on the tested application source and retain the separate fallback result. Confirm the playbook approver and capture the requested joint demo evidence. Do not report historical model evidence as a current-revision pass.

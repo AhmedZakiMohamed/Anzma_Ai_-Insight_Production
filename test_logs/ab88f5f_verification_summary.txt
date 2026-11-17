@@ -1,0 +1,49 @@
+Verification summary for the tested application commit
+
+Tested source commit: ab88f5f9c9b433b1c2caafa22ec31f02bfda6fda
+Branch at test time: main
+Working tree at test time: clean
+Date: 2026-11-17 (Africa/Cairo)
+Environment: Docker Desktop; isolated Compose project anzma-ab88-verify; fresh PostgreSQL volume; PostgreSQL 16; Python 3.11 API container.
+Services: db and api only. The local test override removed host port bindings; it did not modify repository files or the existing anzma-insight project.
+
+Results:
+  tests/unit/test_day2_ahmed.py                         PASS 25/25
+  tests/integration/test_day2_integration.py            PASS 43/43
+  tests/integration/test_data_integrity.py                PASS 18/18
+  tests/integration/test_frontend_api.py                 PASS 18/18
+  tests/integration/test_chat_consistency.py              PASS 31/31
+  Total across the five suites                              PASS 135/135, 0 failures
+  scripts/verify_schema.sql                                PASS OVERALL OK (13 tables, 5 views, index 005 present)
+  tests/integration/test_dashboard.py                     PASS (read-only summary; invoked with PYTHONPATH=/app)
+  tests/scenarios/e2e_s1.py --build                      PASS 14/14
+
+The S1 scenario verified 14/14 evidence rows and completed the deterministic fallback explanation with
+grounding_supported validation and playbook recommendations. The scenario was run without --llm.
+The frontend API suite exercised GET /ready: HTTP 200 with database up and HTTP 503 with database down;
+GET /health remained a liveness check.
+
+Live Ollama inference was not run in this verification. The previously stored live Qwen evidence belongs to
+the earlier 740eae7 run and must not be described as a live AI pass on this tested commit.
+The Compose ollama-init model pull was not run. No browser screen recording was captured.
+
+Reproduction commands (run from the repository root; Compose project uses a fresh volume):
+  docker compose --env-file .env -p anzma-ab88-verify -f deploy/compose/docker-compose.yml -f <local-no-host-ports-override.yml> up -d --build db api
+  docker compose --env-file .env -p anzma-ab88-verify -f deploy/compose/docker-compose.yml -f <local-no-host-ports-override.yml> exec -T api python tests/unit/test_day2_ahmed.py
+  docker compose --env-file .env -p anzma-ab88-verify -f deploy/compose/docker-compose.yml -f <local-no-host-ports-override.yml> exec -T api python tests/integration/test_day2_integration.py
+  docker compose --env-file .env -p anzma-ab88-verify -f deploy/compose/docker-compose.yml -f <local-no-host-ports-override.yml> exec -T api python tests/integration/test_data_integrity.py
+  docker compose --env-file .env -p anzma-ab88-verify -f deploy/compose/docker-compose.yml -f <local-no-host-ports-override.yml> exec -T api python tests/integration/test_frontend_api.py
+  docker compose --env-file .env -p anzma-ab88-verify -f deploy/compose/docker-compose.yml -f <local-no-host-ports-override.yml> exec -T api python tests/integration/test_chat_consistency.py
+  docker compose --env-file .env -p anzma-ab88-verify -f deploy/compose/docker-compose.yml -f <local-no-host-ports-override.yml> exec -T api env PYTHONPATH=/app python tests/integration/test_dashboard.py
+  docker compose --env-file .env -p anzma-ab88-verify -f deploy/compose/docker-compose.yml -f <local-no-host-ports-override.yml> exec -T api python tests/scenarios/e2e_s1.py --build
+  docker compose --env-file .env -p anzma-ab88-verify -f deploy/compose/docker-compose.yml -f <local-no-host-ports-override.yml> exec -T db psql -U postgres -d anzma -f - < scripts/verify_schema.sql
+
+The local override used for port isolation contains:
+  services:
+    db:
+      ports: !reset []
+    api:
+      ports: !reset []
+
+This file is intentionally local and is not tracked. Test output above records the results observed during the
+verification run; the older unprefixed files in test_logs/ are historical evidence from earlier runs.

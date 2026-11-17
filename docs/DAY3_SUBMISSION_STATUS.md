@@ -1,4 +1,4 @@
-> **HISTORICAL - superseded.** Latest verified results (commit 740eae7): [DAY2_TEST_RESULTS.md](DAY2_TEST_RESULTS.md). Kept for history only.
+> **HISTORICAL - superseded.** Latest authoritative results (tested application commit ab88f5f): [DAY2_TEST_RESULTS.md](DAY2_TEST_RESULTS.md). Kept for history only.
 
 # Day 3 submission status
 
