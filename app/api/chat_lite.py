@@ -22,19 +22,16 @@ from fastapi import APIRouter, HTTPException
 from app.api import chat_facts
 from pydantic import BaseModel, Field
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DAY2_PATH = os.path.join(PROJECT_ROOT, "day2_ahmed")
-if DAY2_PATH not in sys.path:
-    sys.path.insert(0, DAY2_PATH)
-
 try:
-    import recommendations as recs
-    import pipeline
-    import db_adapter as da
-    import evidence
-    import validation as val
-    import alert_config as alert_cfg
+    from app.domain.ai import recommendations as recs
+    from app.services import pipeline
+    from app.adapters.database import db_adapter as da
+    from app.domain.evidence import evidence
+    from app.domain.evidence import validation as val
+    from app.domain.alerts import alert_config as alert_cfg
 except Exception:  # pragma: no cover - fallback if a submodule is unavailable in a minimal env
+    import traceback
+    traceback.print_exc()          # never hide a failed import: it silently disables the grounded HVAC answer
     recs = None
     pipeline = None
     da = None
