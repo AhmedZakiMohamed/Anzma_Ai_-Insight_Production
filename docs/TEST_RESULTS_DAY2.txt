@@ -1,4 +1,4 @@
-HISTORICAL - superseded by docs/DAY2_TEST_RESULTS.md (tested application commit ab88f5f). Kept for history only.
+HISTORICAL - superseded by docs/DAY2_TEST_RESULTS.md (tested commit 441110d). Kept for history only.
 
 PASS  integrity: every event type the generator/scenarios emit is valid for its system
 PASS  integrity: incompatible event/equipment pairs are rejected (e.g. SMOKE_DETECTED on a chiller)

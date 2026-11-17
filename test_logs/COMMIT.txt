@@ -1,11 +1,19 @@
-Tested application source commit: ab88f5f9c9b433b1c2caafa22ec31f02bfda6fda
+Tested source and test commit: 441110d49ae1914fe5ea8096f723d200d90b5893
 Branch: main
 Working tree at test time: clean
 Test date: 2026-11-17 (Africa/Cairo)
-Test results: docs/DAY2_TEST_RESULTS.md
-Run summary: test_logs/ab88f5f_verification_summary.txt
+Authoritative report: docs/DAY2_TEST_RESULTS.md
+Joint correction report: docs/DAY2_CORRECTION_REPORT.md
+Raw run evidence: test_logs/441110d/
 
-Commit 5c3ffb919c06a7f3e49124c26ee456b299fac03d is a later documentation-only sync of docs/README.md.
-No application, tests, deployment, database, scripts, or dependency files changed between the tested source commit and that documentation commit.
+Commit 441110d adds direct incident-chart API assertions to
+tests/integration/test_frontend_api.py and a local-only Compose override at
+test_logs/verification/docker-compose.override.yml. It does not change runtime
+application code. Verification was run against this exact commit in an
+isolated Compose project with a fresh PostgreSQL volume. The existing
+development Compose project and database were not used.
 
-Older unprefixed test_logs files are historical evidence from earlier runs; do not attribute them to the tested source commit above.
+Later documentation/evidence commits may follow this tested revision. They do
+not alter the tested application or test code; the exact tested commit remains
+the one recorded above. Older unprefixed test_logs files and the ab88f5f run
+are historical and must not be represented as output from 441110d.

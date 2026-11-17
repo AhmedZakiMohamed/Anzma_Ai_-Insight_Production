@@ -1,0 +1,11 @@
+{
+  "id": 7,
+  "rule_id": "HVAC_HIGH_TEMP",
+  "title": "HVAC temperature above threshold - CRAC Unit 1",
+  "severity": "WARNING",
+  "status": "OPEN",
+  "asset_name": "CRAC Unit 1",
+  "system_type": "HVAC",
+  "incident_id": 6,
+  "first_ts": "2026-11-16T15:15:00Z"
+}

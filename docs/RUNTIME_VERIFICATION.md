@@ -1,35 +1,38 @@
 # Runtime Verification — Day 2
 
-## Current Verification — Tested Application Commit `ab88f5f`
+## Current Verification — Tested Commit `441110d`
 
 **Verification date:** 2026-11-17 (Africa/Cairo)
-**Tested source commit:** `ab88f5f9c9b433b1c2caafa22ec31f02bfda6fda`
-**Branch and worktree at test time:** `main`, clean
+**Tested commit:** `441110d49ae1914fe5ea8096f723d200d90b5893`
+**Branch/worktree at test time:** `main`, clean when verification began
 **Environment:** MacBook Pro (Apple Silicon), Docker Desktop; PostgreSQL 16 and Python 3.11 in the API container.
-**Installation:** Fresh isolated Compose project `anzma-ab88-verify` with a new empty PostgreSQL volume. Only DB and API services were started; a local override removed host port bindings.
-**Current evidence:** [`DAY2_TEST_RESULTS.md`](DAY2_TEST_RESULTS.md) and [`test_logs/ab88f5f_verification_summary.txt`](../test_logs/ab88f5f_verification_summary.txt).
+**Installation:** Fresh isolated Compose project `anzma-acceptance-441110d` and new PostgreSQL volume; development project/database untouched.
+**Evidence:** [DAY2_TEST_RESULTS.md](DAY2_TEST_RESULTS.md), [`test_logs/COMMIT.txt`](../test_logs/COMMIT.txt), and raw outputs in [`test_logs/441110d/`](../test_logs/441110d/).
 
-Commit `5c3ffb9` was created afterward to sync `docs/README.md`. It changed no application, test, deployment, database, script, or dependency files; it is a documentation-only follow-up, not a second tested application version.
+Commit `441110d` adds chart API assertions and a local verification override only; no runtime application code changed. Documentation and evidence updates made afterward do not alter the tested application or test code.
 
 ### Results
 
 | Check | Result |
 |---|---|
-| Unit / Day 2 integration / data integrity / frontend API / chat consistency | **Pass — 135/135 total** |
-| Schema verification | **Pass — OVERALL OK**, 13 tables, 5 views, migration 005 unique index present |
-| `/ready` database dependency | **Pass** — 200 with DB up, 503 with DB down; `/health` remains liveness-only |
-| S1 pipeline scenario | **Pass — 14/14**, 14/14 evidence rows verified, deterministic fallback and recommendations |
-| Read-only dashboard summary | **Pass**; invoked with `PYTHONPATH=/app` |
-| Live Ollama explanation on this source commit | **Not run**; prior live evidence belongs to `740eae7` |
-| Ollama Compose model-pull path | **Not run** |
+| Five suites: unit, integration, integrity, frontend API, chat consistency | **Pass — 135/135**; frontend API 18/18 |
+| Incident-chart API | **Pass** — response shape, HVAC system filter, time-window behavior, and incident transition from critical to resolved are asserted |
+| Schema | **Pass — OVERALL OK**; 13 tables, 5 views, migration 005 unique index present |
+| `/ready` database dependency | **Pass** — 200 with DB available, 503 with DB unavailable; `/health` remains liveness-only |
+| S1 pipeline scenario | **Pass — 14/14**; deterministic fallback path |
+| Read-only dashboard summary | **Pass** |
+| Live stored-alert explanation | **Pass** — alert 7, `qwen2.5:7b`, 7/7 evidence verified, `grounding_supported`, three playbook actions |
+| Separate deterministic fallback | **Pass** — `ai_source=fallback`, `grounding_supported` |
+| Ollama Compose model-pull path | **Not run**; live inference used host Ollama |
+| Browser walkthrough recording | **Not captured** |
 
-The test summary records the exact commands and the local port-isolation override. Historical unprefixed logs under `test_logs/` belong to earlier runs and are not represented as output from `ab88f5f`.
+Historical unprefixed logs under `test_logs/` and the previous `ab88f5f` report are not output from `441110d`.
 
 ### Verification limits
 
-- The S1 explanation used the deterministic fallback; this run does not prove live model inference.
-- The grounding validator checks supported values, times, references, causes, and playbook actions, but is not a semantic correctness check of model wording.
-- No browser walkthrough recording was captured in this run.
+- The grounding validator checks evidence references, values, times, causes, and playbook actions; it does not prove semantic correctness of every model sentence.
+- Playbook approver identity and authority still require owner confirmation.
+- API chart assertions do not constitute browser-rendering evidence; no walkthrough recording was captured.
 
 ---
 

@@ -157,7 +157,7 @@ If Ollama or its model is unavailable, database-backed dashboard features contin
 | `GET /incidents/{id}/evidence` | Re-verified evidence for the incident. |
 | `POST /alerts/{id}/explain` | Evidence-grounded explanation, with optional local model use. |
 
-For ingestion, validation, and full response shapes, use the running API documentation at `/docs`. The API contract and longer-term design notes are in [`docs/API_CONTRACT.md`](API_CONTRACT.md) and [`docs/ARCHITECTURE.md`](ARCHITECTURE.md); those documents include proposed features, so check the implementation links above for current behavior.
+For ingestion, validation, and full response shapes, use the running API documentation at `/docs`. The API contract and longer-term design notes are in [`docs/API_CONTRACT.md`](../docs/API_CONTRACT.md) and [`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md); those documents include proposed features, so check the implementation links above for current behavior.
 
 ## Repository map
 
@@ -173,7 +173,7 @@ For ingestion, validation, and full response shapes, use the running API documen
 | [`db/init/`](../db/init/) and [`db/migrations/`](../db/migrations/) | Initial schema, synthetic data, and schema changes. |
 | [`tests/`](../tests/) | Unit, integration, and scenario checks. |
 | [`deploy/compose/`](../deploy/compose/) | Docker image and Compose services. |
-| [`docs/`](./) | Run guide, data model, architecture, and project history. |
+| [`docs/`](../docs/) | Run guide, data model, architecture, and project history. |
 
 ## Project status and limitations
 

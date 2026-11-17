@@ -1,6 +1,6 @@
 # DATABASE_BASELINE.md — single source of truth for the Anzma database
 
-Status legend: paths below are checked in the current working tree. Current test report: tested application commit ab88f5f (2026-11-17), see DAY2_TEST_RESULTS.md. Related: [DAY2_IMPLEMENTATION_REPORT.md](DAY2_IMPLEMENTATION_REPORT.md), [DAY2_TEST_RESULTS.md](DAY2_TEST_RESULTS.md).
+Status legend: paths below are checked in the current working tree. Latest verification report: tested commit 441110d (2026-11-17), see [DAY2_TEST_RESULTS.md](DAY2_TEST_RESULTS.md). Related: [DAY2_IMPLEMENTATION_REPORT.md](DAY2_IMPLEMENTATION_REPORT.md).
 
 ## 1. Authoritative architecture
 
@@ -11,7 +11,7 @@ PostgreSQL 16 (Docker Compose, `postgres:16`). **13 tables + 5 views.** The auth
 | 1 | `db/init/anzma_schema_and_seed.sql` | 12 tables (reference, facts, alerts, scenario_runs) + seed | tracked; clean install exit 0 (evidence) |
 | 2 | `db/migrations/003_incidents.sql` | `incidents`, `alerts.incident_id`, 3 indexes | present; idempotent by design |
 | 3 | `db/migrations/004_chat_views.sql` | 5 views `v_*` | present; idempotent by design |
-| 4 | `db/migrations/005_alert_uniqueness.sql` | UNIQUE index `uq_alerts_rule_asset_first_ts` | present; VERIFIED on the running database: index uq_alerts_rule_asset_first_ts exists, verify_schema.sql OVERALL OK (commit ab88f5f, 2026-11-17, test_logs/ab88f5f_verification_summary.txt) |
+| 4 | `db/migrations/005_alert_uniqueness.sql` | UNIQUE index `uq_alerts_rule_asset_first_ts` | present; verified on the fresh isolated test database: index exists and `verify_schema.sql` reports OVERALL OK (tested commit 441110d; see `test_logs/441110d/schema.txt`) |
 
 Not authoritative: `data-model.sql` (22-table draft, not loaded by Compose). `db/init/anzma_schema_and_seed.sql` is the single bootstrap schema-and-seed file; tests use this path directly.
 
@@ -51,32 +51,32 @@ Other limitations: telemetry/event tables have no `received_at`, `source`, `qual
 
 ## 7. Clean install and deployment
 
-1. Compose (`docker compose up`) runs init files only on an **empty** volume, in filename order. The current `docker-compose.yml` mounts the base schema (01), then migrations 003, 004, and 005 (02–04). Clean install run on application commit `ab88f5f` in isolated project `anzma-ab88-verify` with a fresh volume on 2026-11-17: `verify_schema.sql` OVERALL OK, 13 tables, 5 views, and the five suites pass (see [DAY2_TEST_RESULTS.md](DAY2_TEST_RESULTS.md)).
+1. Compose (`docker compose up`) runs init files only on an **empty** volume, in filename order. The current `docker-compose.yml` mounts the base schema (01), then migrations 003, 004, and 005 (02–04). Clean install verified on tested commit `441110d` in isolated project `anzma-acceptance-441110d` with a fresh volume on 2026-11-17: `verify_schema.sql` OVERALL OK, 13 tables, 5 views, and the five suites pass (see [DAY2_TEST_RESULTS.md](DAY2_TEST_RESULTS.md)).
 
 2. Existing databases (volume already initialised) are not re-run by Compose: apply any missing migration manually with `psql -f`. **Apply 005 before running the updated `store_alerts` code against an existing DB**: PostgreSQL requires the matching unique index for its `ON CONFLICT` clause. Confirmed: the running database contains 005 (index present).
 
 3. 005 aborts with a clear message if duplicates exist (it never deletes data).
 
-4. Verify any database (read-only): `psql -U <user> -d <db> -f verify_schema.sql` → every row `OK`, final row `OVERALL OK`. **EXECUTED on the fresh test volume: OVERALL OK** (see [`test_logs/ab88f5f_verification_summary.txt`](../test_logs/ab88f5f_verification_summary.txt)).
+4. Verify any database (read-only): `psql -U <user> -d <db> -f verify_schema.sql` → every row `OK`, final row `OVERALL OK`. **Executed on the fresh test volume: OVERALL OK** (see [`test_logs/441110d/schema.txt`](../test_logs/441110d/schema.txt)).
 
 ## 8. Deferred (not implemented)
 
-`source_event_id` event dedup and `received_at`/ingestion metadata (when a connector exists); migration runner + `schema_migrations` (needs Amr's deployment decision); the 12 PROPOSED entities (organizations, asset_external_ids, data_sources, unit_conversions, reporting_expectations, asset_state_current/history, data_gaps, alert_evidence, ingestion_batches/rejections, retention_policies); duplicated `building_id`; relaxing the CHECK on `system_types.code`; `test_chat_consistency` (assigned to Amr); data-clock fix (§5); bandwidth fix (§6).
+`source_event_id` event dedup and `received_at`/ingestion metadata (when a connector exists); migration runner + `schema_migrations` (needs Amr's deployment decision); the 12 PROPOSED entities (organizations, asset_external_ids, data_sources, unit_conversions, reporting_expectations, asset_state_current/history, data_gaps, alert_evidence, ingestion_batches/rejections, retention_policies); duplicated `building_id`; relaxing the CHECK on `system_types.code`; data-clock fix (§5); bandwidth fix (§6).
 
 ## 9. Test status
 
-Latest verified (tested application commit `ab88f5f`, 2026-11-17): 25 + 43 + 18 + 18 + 31 = **135/135 PASS**; schema `OVERALL OK`; readiness PASS; `e2e_s1.py` PASS 14/14; read-only `test_dashboard.py` PASS. The earlier 103/103 on `87e084d` and 134/134 on `740eae7` are historical. Live Ollama inference and the Compose-container Ollama model-pull path were not verified on `ab88f5f`. See [DAY2_TEST_RESULTS.md](DAY2_TEST_RESULTS.md).
+Latest verified (tested commit `441110d`, 2026-11-17): 25 + 43 + 18 + 18 + 31 = **135/135 PASS**; schema `OVERALL OK`; readiness PASS; `e2e_s1.py` PASS 14/14; read-only `test_dashboard.py` PASS. Live Ollama explanation and separate fallback were both verified on alert 7; the Compose-container Ollama model-pull path was not run. See [DAY2_TEST_RESULTS.md](DAY2_TEST_RESULTS.md).
 
 ## 10. Task 3 analysis (static audit of code and Ahmed's reported evidence)
 
-The path consolidation in §1 and §7 was verified on application commit ab88f5f (2026-11-17): a fresh Compose install was executed in a separate project (anzma-ab88-verify, fresh volume), and the database was verified to contain migration 005. See DAY2_TEST_RESULTS.md and test_logs/ab88f5f_verification_summary.txt.
+The path consolidation in §1 and §7 was verified on commit `441110d` (2026-11-17): a fresh Compose install was executed in a separate project (`anzma-acceptance-441110d`, fresh volume), and the database was verified to contain migration 005. See [DAY2_TEST_RESULTS.md](DAY2_TEST_RESULTS.md) and [`test_logs/441110d/schema.txt`](../test_logs/441110d/schema.txt).
 
 | Topic | What the code/schema actually does | Minimum change for Core v0.1 |
 |---|---|---|
 | Source / asset identification | Asset = `assets.asset_id` (numeric, what the API uses) + `asset_code` (UNIQUE, e.g. `HVAC-AHU-01`) + `name`. No vendor/external id; no `source` on telemetry, events or alerts. Manual origin is only visible in `event_records.details` (`manual test`) and `alerts.evidence.source = "manual"`. | None now. Treat `asset_code` as the stable external key. `asset_external_ids` / `data_sources` stay PROPOSED. |
 | Timestamps | All `ts` columns are `TIMESTAMPTZ`; `db_adapter` converts to UTC; no `received_at` (cannot tell event time from arrival time). | None now (`received_at` deferred until a connector exists). |
 | Measurement consistency | `metric_types.unit` holds the unit; telemetry CHECK rejects NaN/±Infinity. `bandwidth_util` is `%` (15.57–72.32) but `alert_config` thresholds are 900/980 and the anomaly rule in `alert_engine.py` labels it `Mbps` → unit mismatch also in labels (C5). | None (C5 pending Eng. Mohsen/Amr). |
-| Duplicate prevention | telemetry UNIQUE(asset,metric,ts); events UNIQUE(asset,event_type,ts) and `POST /events` uses `ON CONFLICT DO NOTHING` → HTTP 409; alerts: **005**. Incidents: grouping logic in `incident_engine.py`, no DB uniqueness. | 005 is in the clean-install sequence and VERIFIED on the running database: index uq_alerts_rule_asset_first_ts exists (commit ab88f5f, 2026-11-17). Clean-install verification also passed; see DAY2_TEST_RESULTS.md. |
+| Duplicate prevention | telemetry UNIQUE(asset,metric,ts); events UNIQUE(asset,event_type,ts) and `POST /events` uses `ON CONFLICT DO NOTHING` → HTTP 409; alerts: **005**. Incidents: grouping logic in `incident_engine.py`, no DB uniqueness. | 005 is in the clean-install sequence and verified on the fresh test database (commit `441110d`, 2026-11-17). Clean-install verification also passed; see [DAY2_TEST_RESULTS.md](DAY2_TEST_RESULTS.md). |
 | Compatibility rules | `*_compat` tables are not enforced by the DB. `POST /events` enforces event/system compatibility in code; no code path inserts telemetry (only the seed does). | None; pinned by a test. |
 | Equipment state | Not stored. Computed at query time: `v_asset_overview.health_24h` = critical > no_data > warning > normal over the 24 h before the data clock; cameras by latest `camera_offline` vs `camera_online` (`v_camera_status`). | None. `asset_state_current` stays PROPOSED. |
 | Freshness | "Now" = `max(ts)` of telemetry/events (`v_data_clock`, `da.latest_ts`), never the wall clock; `no_data` and the 20-min reading-gap rule (`reading_gap_min=20`) depend on it. A manual event moves the clock (§5). | None; decision pending (§5). |
@@ -88,6 +88,6 @@ The path consolidation in §1 and §7 was verified on application commit ab88f5f
 
 2. `day2_ahmed/alert_engine.py::store_alerts(cur, alerts, start, end)` is legacy: it `DELETE`s alerts in a window and re-inserts them with no conflict handling. Nothing calls it (grep: only `pipeline.py` and `App.py` call `db_adapter.store_alerts`). **Not changed**; recommend removing it in a separate change because it would orphan `alerts.incident_id` links if ever used.
 
-3. Contradictory schema references. **Fixed:** `DATA_MODEL.md` and `data-model.sql` now carry a DRAFT / NOT AUTHORITATIVE banner. **Left for Amr (README/RUN_DEMO are not mine):** `README.md` line 59 and `RUN_DEMO.md` line 9 say the init loads only base + 003; they should list 004 and 005. `DECISION_MATRIX.md` line ~530 mentions `migrations/001_unified_schema.sql` (historical plan).
+3. Contradictory schema references. **Fixed:** `DATA_MODEL.md` and `data-model.sql` carry a DRAFT / NOT AUTHORITATIVE banner. An earlier audit note incorrectly said README and RUN_DEMO omitted migrations 004 and 005; that claim is removed because those references do not occur in the current guides. `DECISION_MATRIX.md` has a historical plan reference to `migrations/001_unified_schema.sql`.
 
 4. Tests use the single bootstrap file at `db/init/anzma_schema_and_seed.sql`; no duplicate schema copy is required.
