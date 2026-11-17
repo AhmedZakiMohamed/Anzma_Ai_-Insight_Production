@@ -67,6 +67,10 @@
       border-left-color: var(--warn, #9a6410);
     }
 
+    #incList li.resolved {
+      border-left-color: #1e6b3f;
+    }
+
     #incList li[aria-selected="true"] {
       outline: 2px solid #2a7f8e;
     }
@@ -103,6 +107,11 @@
     }
 
     .tag.ok {
+      background: #e3f4ea;
+      color: #1e6b3f;
+    }
+
+    .tag.status-resolved {
       background: #e3f4ea;
       color: #1e6b3f;
     }
@@ -253,6 +262,11 @@
       <section class="panel" id="p-top">
         <h3>System health (assets by status)</h3>
         <div style="height:300px"><canvas id="c-top"></canvas></div>
+      </section>
+      <section class="panel" id="p-incidents">
+        <h3>Incidents by asset</h3>
+        <p class="inc-hint">Active means open or acknowledged. Resolved incidents remain visible as history.</p>
+        <div style="height:300px"><canvas id="c-incidents"></canvas></div>
       </section>
     </div>
     <h2>Equipment health</h2>
@@ -591,7 +605,10 @@
 
 
     function drawSystemHealth(systems) {
-      const rows = systems || [];
+      const allRows = systems || [];
+      const rows = state.system
+        ? allRows.filter(system => system.type === state.system)
+        : allRows;
       const sets = [
         { label: "OK", data: rows.map(s => s.ok), backgroundColor: "#2e7d4f" },
         { label: "Warning", data: rows.map(s => s.warning), backgroundColor: "#e0a030" },
@@ -608,6 +625,22 @@
         "bar",
         rows.map(s => LABEL[s.type] || s.type),
         sets,
+        { horizontal: true, stacked: true }
+      );
+    }
+
+    function drawIncidentChart(incidentBars) {
+      const rows = incidentBars || [];
+      chart(
+        "c-incidents",
+        "bar",
+        rows.map(row => `${row.asset_name} · ${LABEL[row.system_type] || row.system_type}`),
+        [
+          { label: "Resolved", data: rows.map(row => row.resolved), backgroundColor: "#2e7d4f" },
+          { label: "Active warning", data: rows.map(row => row.warning), backgroundColor: "#e0a030" },
+          { label: "Active critical", data: rows.map(row => row.critical), backgroundColor: "#b3261e" },
+          { label: "Active info", data: rows.map(row => row.info), backgroundColor: "#64748b" }
+        ],
         { horizontal: true, stacked: true }
       );
     }
@@ -839,6 +872,8 @@
 
         drawSystemHealth(summary.systems);
 
+        drawIncidentChart(summary.incident_bars);
+
         drawKpis(summary.kpis);
 
         drawTrends(trends);
@@ -992,6 +1027,7 @@
     const passes = alert => {
 
       return (
+        String(alert.status || "OPEN").toUpperCase() !== "RESOLVED" &&
         (!AC.filters.severity ||
           alert.severity === AC.filters.severity) &&
 
@@ -1029,7 +1065,8 @@
         </span>
 
         <span class="al-meta">
-          ${esc(LABEL[alert.system_type] || alert.system_type)}
+          Status: ${esc(alert.status || "OPEN")}
+          · ${esc(LABEL[alert.system_type] || alert.system_type)}
           · ${esc(alert.asset_name)}
 
           ${alert.zone
@@ -1041,8 +1078,18 @@
           : ""}
         </span>
 
+        ${alert.incident_id
+          ? `<button type="button" class="al-open-incident" data-open-incident="${esc(alert.incident_id)}">
+              Open incident #${esc(alert.incident_id)}
+            </button>`
+          : '<span class="al-no-incident">No incident linked</span>'}
+
       </li>
     `).join("");
+
+      $("acList").querySelectorAll("[data-open-incident]").forEach(button => {
+        button.onclick = () => openLinkedIncident(Number(button.dataset.openIncident));
+      });
 
       $("acCount").textContent = list.length;
 
@@ -1299,24 +1346,12 @@
         });
 
 
-        items.forEach(alert => {
-
-          if (
-            alert.id == null ||
-            AC.seen.has(alert.id)
-          ) {
-            return;
-          }
-
-          AC.seen.add(alert.id);
-
-          AC.alerts.push(alert);
-
-        });
-
-
-        // Respect maximum alert limit
-        AC.alerts = AC.alerts.slice(0, AC.max);
+        const freshById = new Map(AC.alerts.map(alert => [alert.id, alert._fresh]));
+        AC.alerts = items
+          .filter(alert => alert.id != null)
+          .slice(0, AC.max)
+          .map(alert => ({ ...alert, _fresh: freshById.get(alert.id) || false }));
+        AC.seen = new Set(AC.alerts.map(alert => alert.id));
 
 
         // Render initial alerts
@@ -1471,11 +1506,13 @@
         const openN = items.filter(i => i.status !== "resolved").length;
         $("incCount").textContent = openN === items.length ? String(items.length) : `${openN} open / ${items.length} total`; $("incEmpty").style.display = items.length ? "none" : "block";
         $("incList").innerHTML = items.map(i => `
-          <li class="${esc(i.severity.toUpperCase())}" data-id="${esc(i.id)}"
+          <li class="${esc(i.severity.toUpperCase())} ${esc(i.status.toLowerCase())}" data-id="${esc(i.id)}"
               aria-selected="${INC.selected === i.id}">
             <div class="t">
-              <span class="tag ${esc(i.severity.toUpperCase())}">${esc(i.severity.toUpperCase())}</span>
-              <span class="tag">${esc(i.status.toUpperCase())}</span>${esc(i.title)}
+              ${i.status === "resolved"
+                ? '<span class="tag status-resolved">RESOLVED</span>'
+                : `<span class="tag ${esc(i.severity.toUpperCase())}">${esc(i.severity.toUpperCase())}</span>
+                   <span class="tag">${esc(i.status.toUpperCase())}</span>`}${esc(i.title)}
             </div>
             <div class="m">#${esc(i.id)} · ${esc(i.building)}, ${esc(i.zone)} ·
               ${esc(fmtTime(i.first_ts, true))} to ${esc(fmtTime(i.last_ts, true))} ·
@@ -1508,6 +1545,12 @@
       }
     }
 
+    async function openLinkedIncident(id) {
+      await loadIncidents();
+      await selectIncident(id);
+      $("incidents").scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
     function renderIncident(incident, evidence) {
       const verifiedOk = evidence.total > 0 && evidence.verified === evidence.total;
       const actions = (incident.recommended_actions || []).map(a => `
@@ -1531,7 +1574,7 @@
         <h4 style="margin-top:0">${esc(incident.title)}</h4>
         <div>
           <span class="tag ${esc(incident.severity.toUpperCase())}">${esc(incident.severity.toUpperCase())}</span>
-          <span class="tag">${esc(incident.status.toUpperCase())}</span>
+          <span class="tag ${incident.status === "resolved" ? "status-resolved" : ""}">${esc(incident.status.toUpperCase())}</span>
           <span class="tag ${verifiedOk ? "ok" : "bad"}" title="Every evidence row is re-read from the telemetry/event tables and compared">
             Evidence verified in database: ${esc(evidence.verified)} / ${esc(evidence.total)}</span>
           <span class="tag" title="How alerts are grouped into an incident">${esc(incident.grouping_rule)}</span>
@@ -1558,7 +1601,7 @@
         });
         await loadIncidents();
         await selectIncident(id);
-        load();
+        await Promise.all([load(), loadInitialAlerts()]);
       } catch (error) {
         alert(`Could not change the status: ${error.message}`);
       }

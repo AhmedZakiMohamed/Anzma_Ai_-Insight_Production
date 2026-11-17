@@ -378,6 +378,12 @@ th.n {
 .al .al-title { font-weight: 650; }
 .al .al-meta  { color: var(--muted); font-size: 12px; }
 .al .al-time  { color: var(--muted); font-size: 12px; grid-row: span 2; align-self: center; }
+.al .al-open-incident {
+  grid-column: 2 / -1; justify-self: start; padding: 1px 0; border: 0;
+  background: transparent; color: var(--accent); font: inherit; font-size: 12px;
+  text-decoration: underline; cursor: pointer;
+}
+.al .al-no-incident { grid-column: 2 / -1; color: var(--muted); font-size: 11px; }
 .al.CRITICAL { border-left-color: var(--crit); }
 .al.WARNING  { border-left-color: var(--warn); }
 .al.INFO     { border-left-color: var(--info); }

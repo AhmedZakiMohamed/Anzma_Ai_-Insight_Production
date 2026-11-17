@@ -79,14 +79,17 @@ KPI_DEFINITIONS = {
     "healthy_assets_pct": {
         "name": "Healthy assets",
         "unit": "%",
-        "source": "assets, telemetry_records, event_records",
+        "source": "assets, telemetry_records, event_records, alerts",
         "definition": (
             "Assets with status Normal divided by monitored assets, times 100. "
-            "Status rules: Critical = a critical fault still active at the end of the period or an "
-            "unrecoverable critical point event in the period; "
+            "Status rules: Critical = a critical fault still active at the end of the period, an "
+            "unrecoverable critical point event in the period, or an open/acknowledged critical alert; "
             "No data = the asset normally sends telemetry or heartbeats but sent "
             "none in the period; Unknown = the asset has never sent telemetry or an event; "
-            "Warning = at least one warning event or no data in the period; otherwise Normal."
+            "Warning = an open/acknowledged warning alert, an active paired warning fault, or an "
+            "unresolved warning event in the period; "
+            "otherwise Normal. Incident status is reflected through linked alert status. Resolving an alert clears "
+            "fault events covered by that alert; newer matching fault events can make the asset unhealthy again."
         ),
     },
     "alerts_raised": {
@@ -438,12 +441,16 @@ def _asset_status_counts(conn, params):
 
 
     Priority:
-    1. critical: a critical fault is still active at the end of the selected window, or an
-       unrecoverable critical point event occurred in the window
-    2. no_data: the asset has reported before but has no telemetry or heartbeat in period
-    3. warning: at least one warning event in period
-    4. unknown: no telemetry or event has ever been recorded for the asset
-    5. normal: everything else
+    1. critical: a critical fault/point event or unresolved critical alert is active
+    2. warning: a warning fault/point event or unresolved warning alert is active
+    3. no_data: the asset reported before but has no telemetry or heartbeat in period
+    4. warning: at least one warning event occurred in period
+    5. unknown: no telemetry or event has ever been recorded for the asset
+    6. normal: everything else
+
+    Incident lifecycle changes are mirrored to linked alert statuses by
+    incident_engine.set_status. OPEN and ACKNOWLEDGED alerts affect current health; a RESOLVED alert retires
+    the fault observations within its recorded time span. A newer fault observation can reopen the health state.
     """
 
 
@@ -456,25 +463,55 @@ def _asset_status_counts(conn, params):
         , fault_pairs(fault_type, recovery_type) AS (VALUES """ + pair_values + """)
         , latest_fault_state AS (
             SELECT DISTINCT ON (er.asset_id, fp.fault_type)
-                er.asset_id, fp.fault_type, et.name AS event_type, er.severity
+                er.asset_id, fp.fault_type, et.name AS event_type, er.severity, er.ts
             FROM event_records AS er
             JOIN event_types AS et ON et.event_type_id = er.event_type_id
             JOIN fault_pairs AS fp ON et.name IN (fp.fault_type, fp.recovery_type)
             WHERE er.ts < %(end)s
             ORDER BY er.asset_id, fp.fault_type, er.ts DESC, er.event_id DESC
         ), active_fault_stats AS (
+            SELECT lfs.asset_id,
+                   COUNT(*) FILTER (WHERE lfs.event_type = lfs.fault_type AND lfs.severity = 'critical'
+                       AND NOT EXISTS (
+                           SELECT 1 FROM alerts al
+                           WHERE al.asset_id = lfs.asset_id AND al.severity = lfs.severity
+                             AND al.status = 'resolved' AND lfs.ts BETWEEN al.first_ts AND al.last_ts
+                       )) AS critical_count,
+                   COUNT(*) FILTER (WHERE lfs.event_type = lfs.fault_type AND lfs.severity = 'warning'
+                       AND NOT EXISTS (
+                           SELECT 1 FROM alerts al
+                           WHERE al.asset_id = lfs.asset_id AND al.severity = lfs.severity
+                             AND al.status = 'resolved' AND lfs.ts BETWEEN al.first_ts AND al.last_ts
+                       )) AS warning_count
+            FROM latest_fault_state AS lfs
+            GROUP BY lfs.asset_id
+        ), active_alert_stats AS (
             SELECT asset_id,
-                   COUNT(*) FILTER (WHERE event_type = fault_type AND severity = 'critical') AS critical_count
-            FROM latest_fault_state
+                   COUNT(*) FILTER (WHERE severity = 'critical') AS critical_count,
+                   COUNT(*) FILTER (WHERE severity = 'warning') AS warning_count
+            FROM alerts
+            WHERE status IN ('open', 'acknowledged')
             GROUP BY asset_id
         ), event_stats AS (
             SELECT
                 er.asset_id,
                 COUNT(*) FILTER (
-                    WHERE er.severity = 'critical' AND et.name <> ALL(%(paired_types)s)
+                    WHERE er.severity = 'critical'
+                      AND et.name <> ALL(%(paired_types)s)
+                      AND NOT EXISTS (
+                          SELECT 1 FROM alerts al
+                          WHERE al.asset_id = er.asset_id AND al.severity = 'critical'
+                            AND al.status = 'resolved' AND er.ts BETWEEN al.first_ts AND al.last_ts
+                      )
                 ) AS critical_count,
                 COUNT(*) FILTER (
                     WHERE er.severity = 'warning'
+                      AND et.name <> ALL(%(paired_types)s)
+                      AND NOT EXISTS (
+                          SELECT 1 FROM alerts al
+                          WHERE al.asset_id = er.asset_id AND al.severity = 'warning'
+                            AND al.status = 'resolved' AND er.ts BETWEEN al.first_ts AND al.last_ts
+                      )
                 ) AS warning_count
             FROM event_records AS er
             JOIN event_types AS et ON et.event_type_id = er.event_type_id
@@ -505,12 +542,16 @@ def _asset_status_counts(conn, params):
         )
         SELECT
             s.asset_id,
-            COALESCE(e.critical_count, 0) + COALESCE(af.critical_count, 0) AS critical_count,
-            COALESCE(e.warning_count, 0) AS warning_count,
+            COALESCE(e.critical_count, 0) + COALESCE(af.critical_count, 0)
+                + COALESCE(aa.critical_count, 0) AS critical_count,
+            COALESCE(e.warning_count, 0) + COALESCE(af.warning_count, 0)
+                + COALESCE(aa.warning_count, 0) AS warning_count,
             COALESCE(t.telemetry_count, 0) AS telemetry_count,
             COALESCE(h.heartbeat_count, 0) AS heartbeat_count,
             CASE
-                WHEN COALESCE(e.critical_count, 0) + COALESCE(af.critical_count, 0) > 0 THEN 'critical'
+                WHEN COALESCE(e.critical_count, 0) + COALESCE(af.critical_count, 0)
+                     + COALESCE(aa.critical_count, 0) > 0 THEN 'critical'
+                WHEN COALESCE(aa.warning_count, 0) + COALESCE(af.warning_count, 0) > 0 THEN 'warning'
                 WHEN COALESCE(t.telemetry_count, 0) = 0
                  AND COALESCE(h.heartbeat_count, 0) = 0
                  AND (
@@ -537,6 +578,7 @@ def _asset_status_counts(conn, params):
         FROM scope AS s
         LEFT JOIN event_stats AS e ON e.asset_id = s.asset_id
         LEFT JOIN active_fault_stats AS af ON af.asset_id = s.asset_id
+        LEFT JOIN active_alert_stats AS aa ON aa.asset_id = s.asset_id
         LEFT JOIN telemetry_stats AS t ON t.asset_id = s.asset_id
         LEFT JOIN heartbeat_stats AS h ON h.asset_id = s.asset_id
         """,

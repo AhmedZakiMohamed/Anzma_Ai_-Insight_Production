@@ -1,0 +1,13 @@
+{"status":"ready","database":"up"}
+HTTP 200
+{"status":"not_ready","database":"down"}
+HTTP 503
+{"status":"ok"}
+HTTP 200
+NAME                  IMAGE               COMMAND                  SERVICE   CREATED          STATUS                    PORTS
+anzma-insight-api-1   anzma-insight-api   "uvicorn app.main:as…"   api       57 seconds ago   Up 56 seconds (healthy)   0.0.0.0:8000->8000/tcp
+{"status":"ready","database":"up"}
+HTTP 200
+NAME                  IMAGE               COMMAND                  SERVICE   CREATED              STATUS                        PORTS
+anzma-insight-api-1   anzma-insight-api   "uvicorn app.main:as…"   api       About a minute ago   Up About a minute (healthy)   0.0.0.0:8000->8000/tcp
+anzma-insight-db-1    postgres:16         "docker-entrypoint.s…"   db        12 hours ago         Up 20 seconds (healthy)       0.0.0.0:5432->5432/tcp

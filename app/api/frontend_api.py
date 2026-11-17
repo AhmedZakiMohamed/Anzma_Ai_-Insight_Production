@@ -153,6 +153,30 @@ def create_router(open_ro=core.open_readonly):
                              "unit": "incidents", "sub": f"{inc['crit_n']} critical",
                              "definition": "Incidents that are not resolved (open or acknowledged), whatever the "
                                            "selected window or system. An incident groups related alerts."})
+                incident_rows = conn.execute("""
+                    SELECT a.asset_id, a.name AS asset_name, st.code AS system,
+                           count(DISTINCT i.incident_id) FILTER (WHERE i.status = 'resolved') AS resolved,
+                           count(DISTINCT i.incident_id) FILTER (
+                               WHERE i.status IN ('open', 'acknowledged') AND i.severity = 'warning') AS warning,
+                           count(DISTINCT i.incident_id) FILTER (
+                               WHERE i.status IN ('open', 'acknowledged') AND i.severity = 'critical') AS critical,
+                           count(DISTINCT i.incident_id) FILTER (
+                               WHERE i.status IN ('open', 'acknowledged') AND i.severity = 'info') AS info
+                    FROM incidents i
+                    JOIN alerts al ON al.incident_id = i.incident_id
+                    JOIN assets a ON a.asset_id = al.asset_id
+                    JOIN system_types st ON st.system_type_id = a.system_type_id
+                    WHERE (%(system)s::text IS NULL OR st.code = %(system)s::text)
+                    GROUP BY a.asset_id, a.name, st.code
+                    HAVING count(DISTINCT i.incident_id) > 0
+                    ORDER BY st.code, a.name
+                """, {"system": code}).fetchall()
+                incident_bars = [
+                    {"asset_id": r["asset_id"], "asset_name": r["asset_name"],
+                     "system_type": SYSTEM_TO_UI[r["system"]], "resolved": int(r["resolved"]),
+                     "warning": int(r["warning"]), "critical": int(r["critical"]), "info": int(r["info"])}
+                    for r in incident_rows
+                ]
         except core.NoDataError as exc:
             raise HTTPException(503, str(exc))
         except core.DashboardError as exc:
@@ -161,7 +185,7 @@ def create_router(open_ro=core.open_readonly):
             raise HTTPException(503, f"Database unavailable: {exc}")
         return {"window": {"from": _iso(start), "to": _iso(last), "hours": hours, "as_of": _iso(last),
                            "reference": "latest stored record"},
-                "systems": systems, "kpis": kpis}
+                "systems": systems, "kpis": kpis, "incident_bars": incident_bars}
 
     # ------------------------------------------------------------------ trends
     @router.get("/dashboard/trends", summary="Time series for the charts")
@@ -251,21 +275,52 @@ def create_router(open_ro=core.open_readonly):
                     fault_pairs(fault_type, recovery_type) AS (VALUES {pair_values}),
                     latest_fault_state AS (
                         SELECT DISTINCT ON (x.asset_id, fp.fault_type)
-                               x.asset_id, fp.fault_type, et.name AS event_type, x.severity
+                               x.asset_id, fp.fault_type, et.name AS event_type, x.severity, x.ts
                         FROM event_records x JOIN event_types et USING (event_type_id)
                         JOIN fault_pairs fp ON et.name IN (fp.fault_type, fp.recovery_type)
                         WHERE x.ts < %(end)s
                         ORDER BY x.asset_id, fp.fault_type, x.ts DESC, x.event_id DESC),
-                    active_pair_criticals AS (
-                        SELECT asset_id, count(*) AS n FROM latest_fault_state
-                        WHERE event_type = fault_type AND severity = 'critical' GROUP BY asset_id),
+                    active_pair_fault_stats AS (
+                        SELECT lfs.asset_id,
+                               count(*) FILTER (WHERE lfs.severity = 'critical' AND NOT EXISTS (
+                                   SELECT 1 FROM alerts al
+                                   WHERE al.asset_id = lfs.asset_id AND al.severity = lfs.severity
+                                     AND al.status = 'resolved' AND lfs.ts BETWEEN al.first_ts AND al.last_ts
+                               )) AS critical_n,
+                               count(*) FILTER (WHERE lfs.severity = 'warning' AND NOT EXISTS (
+                                   SELECT 1 FROM alerts al
+                                   WHERE al.asset_id = lfs.asset_id AND al.severity = lfs.severity
+                                     AND al.status = 'resolved' AND lfs.ts BETWEEN al.first_ts AND al.last_ts
+                               )) AS warning_n
+                        FROM latest_fault_state AS lfs
+                        WHERE lfs.event_type = lfs.fault_type
+                        GROUP BY lfs.asset_id),
+                    active_alert_stats AS (
+                        SELECT asset_id,
+                               count(*) FILTER (WHERE severity = 'critical') AS critical_alerts,
+                               count(*) FILTER (WHERE severity = 'warning') AS warning_alerts
+                        FROM alerts
+                        WHERE status IN ('open', 'acknowledged')
+                        GROUP BY asset_id),
                     ev AS (
                         SELECT x.asset_id,
                                count(*) FILTER (WHERE et.name <> ALL(%(skip)s)) AS events,
                                count(*) FILTER (WHERE et.name = ANY(%(faults)s)) AS faults,
-                               count(*) FILTER (WHERE x.severity = 'warning') AS warnings,
+                               count(*) FILTER (WHERE x.severity = 'warning'
+                                   AND et.name <> ALL(%(paired_types)s)
+                                   AND NOT EXISTS (
+                                       SELECT 1 FROM alerts al
+                                       WHERE al.asset_id = x.asset_id AND al.severity = 'warning'
+                                         AND al.status = 'resolved' AND x.ts BETWEEN al.first_ts AND al.last_ts
+                                   )) AS warnings,
                                count(*) FILTER (WHERE x.severity = 'critical') AS criticals,
-                               count(*) FILTER (WHERE x.severity = 'critical' AND et.name <> ALL(%(paired_types)s)) AS point_criticals,
+                               count(*) FILTER (WHERE x.severity = 'critical'
+                                   AND et.name <> ALL(%(paired_types)s)
+                                   AND NOT EXISTS (
+                                       SELECT 1 FROM alerts al
+                                       WHERE al.asset_id = x.asset_id AND al.severity = 'critical'
+                                         AND al.status = 'resolved' AND x.ts BETWEEN al.first_ts AND al.last_ts
+                                   )) AS point_criticals,
                                count(*) FILTER (WHERE et.name = 'heartbeat') AS heartbeats
                         FROM event_records x JOIN event_types et USING (event_type_id)
                         WHERE x.ts >= %(start)s AND x.ts < %(end)s GROUP BY x.asset_id),
@@ -279,11 +334,14 @@ def create_router(open_ro=core.open_readonly):
                              GROUP BY asset_id)
                     SELECT s.*, COALESCE(e.events,0) AS events, COALESCE(e.faults,0) AS faults,
                            COALESCE(e.warnings,0) AS warnings, COALESCE(e.criticals,0) AS criticals,
-                           COALESCE(e.point_criticals,0) + COALESCE(ap.n,0) AS active_criticals,
+                           COALESCE(e.point_criticals,0) + COALESCE(ap.critical_n,0)
+                               + COALESCE(aa.critical_alerts,0) AS active_criticals,
+                           COALESCE(ap.warning_n,0) + COALESCE(aa.warning_alerts,0) AS active_warning_alerts,
                            COALESCE(e.heartbeats,0) AS heartbeats, COALESCE(t.n,0) AS telemetry,
                            (s.asset_id IN (SELECT asset_id FROM ever)) AS reports, seen.last_seen
                     FROM scope s LEFT JOIN ev e USING (asset_id) LEFT JOIN tel t USING (asset_id)
-                    LEFT JOIN active_pair_criticals ap USING (asset_id) LEFT JOIN seen USING (asset_id)
+                    LEFT JOIN active_pair_fault_stats ap USING (asset_id) LEFT JOIN seen USING (asset_id)
+                    LEFT JOIN active_alert_stats aa USING (asset_id)
                     ORDER BY s.system, s.name""",
                                     {"system": code, "start": start, "end": end, "skip": list(NOT_COUNTED_EVENTS),
                                      "paired_types": paired_event_types,
@@ -298,6 +356,8 @@ def create_router(open_ro=core.open_readonly):
             # Match dashboard status semantics: critical > no data/warning > unknown > normal.
             if r["active_criticals"]:
                 status, reason = "CRITICAL", f"{r['active_criticals']} active critical condition(s)"
+            elif r["active_warning_alerts"]:
+                status, reason = "WARNING", f"{r['active_warning_alerts']} active warning condition(s)"
             elif r["reports"] and r["telemetry"] == 0 and r["heartbeats"] == 0:
                 status, reason = "WARNING", "No telemetry or heartbeat received in the window"
             elif r["warnings"]:
