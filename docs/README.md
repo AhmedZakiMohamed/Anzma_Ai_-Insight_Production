@@ -1,288 +1,184 @@
-# Anzma AI Insight – Unified Platform
+# Anzma AI Insight
 
-**Anzma AI Insight** is a locally hosted demo of a smart-building operations platform. It takes a simulated fault all the way to an evidence-backed explanation and recommendation on a dashboard:
+Anzma AI Insight is a locally hosted smart-building operations demo. It brings telemetry and events from five building systems into one PostgreSQL database, detects operational problems, groups related alerts into incidents, and presents asset health and incident history in a dashboard.
 
-```text
-Simulated fault → Alert detection → Incident + evidence → AI explanation
-                → Grounding checks → Recommendation → Dashboard
-```
-
-It covers five building systems: **HVAC, Networking, Access Control, CCTV and Fire Alarm**.
-
-> **Status:** integration/demo build on simulated data. It is not a production building-management system. There is no authentication, no live device connection and no autonomous control. AI only explains facts and playbook actions that are already stored; it cannot create readings, faults or actions.
+The repository is a **simulated-data demo**, not a production building-management system. It has no authentication, no direct live-device connection, and no equipment control. Recommendations are informational; the platform does not operate building equipment.
 
 ## What the platform does
 
-1. Loads reference data and a simulated history into PostgreSQL on first start.
-2. Runs 16 configured threshold, anomaly and compound alert rules, at start-up and every `DETECT_INTERVAL` seconds (default 60). Detection is idempotent, so re-running never duplicates alerts or incidents.
-3. Groups alerts of the same location within 15 minutes into **incidents** with a lifecycle (open → acknowledged → resolved).
-4. Re-reads every piece of evidence from the original fact tables and reports how many rows were verified.
-5. Explains an alert with a local Ollama model when requested, or with a deterministic fallback that goes through the same checks and states the limitation.
-6. Recommends only conditional **playbook** actions that are supported by the current facts.
-7. Shows all of this in a browser dashboard with an assistant widget, and pushes new alerts live over Socket.IO.
+1. Loads buildings, locations, systems, assets, metric and event catalogues, and synthetic history into PostgreSQL on the first start of an empty database volume.
+2. Runs alert detection at startup and periodically afterward (default: every 60 seconds). Detection is idempotent: an existing alert is not inserted again.
+3. Groups related alerts into incidents that operators can acknowledge or resolve.
+4. Shows active alerts, incident history, asset health, system health, trends, and evidence in a browser dashboard.
+5. Explains alerts with a local Ollama model when enabled. If the model is unavailable or its answer fails grounding checks, the platform can return a deterministic explanation based on stored evidence.
 
-```text
-Simulated data → PostgreSQL → Alert detection → Incident grouping → Evidence re-verification
-                                                                          │
-                                                   Ollama ◄── explanation ──► Deterministic fallback
-                                                                          │
-                                                            Grounding checks
-                                                                          │
-                                                   Recommendations + Dashboard + Assistant
+The application entry point, routes, startup tasks, and Socket.IO alert broadcast are in [`app/main.py`](../app/main.py). Detection and persistence are coordinated by [`app/services/pipeline.py`](../app/services/pipeline.py), [`app/domain/alerts/alert_engine.py`](../app/domain/alerts/alert_engine.py), and [`app/adapters/database/db_adapter.py`](../app/adapters/database/db_adapter.py).
+
+## End-to-end workflow
+
+```mermaid
+flowchart LR
+    SRC["Seeded or submitted observations"] --> ASSET["Asset identity and system compatibility"]
+    ASSET --> FACTS["PostgreSQL telemetry_records and event_records"]
+    FACTS --> RULES["Alert rules"]
+    RULES --> ALERTS["Alerts linked to assets"]
+    ALERTS --> INCIDENTS["Incidents grouped by asset, system, location, and time"]
+    FACTS --> HEALTH["Asset health calculation"]
+    ALERTS --> HEALTH
+    INCIDENTS -->|"acknowledge / resolve updates linked alerts"| ALERTS
+    HEALTH --> DASH["System status, health chart, equipment table"]
+    ALERTS --> DASH
+    INCIDENTS --> DASH
+    FACTS --> TRENDS["Event and telemetry trend charts"]
+    TRENDS --> DASH
 ```
 
-## Technology
+The database stores telemetry and event observations separately. Both belong to an asset, and the reference catalogues validate that a metric or event type is compatible with that asset's system. The canonical schema and synthetic seed are in [`db/init/anzma_schema_and_seed.sql`](../db/init/anzma_schema_and_seed.sql); Compose applies the incident, chat-view, and alert-uniqueness migrations from [`db/migrations/`](../db/migrations/).
 
-| Area | Technology |
-|---|---|
-| Language / API | Python 3.11, FastAPI, Uvicorn, python-socketio |
-| Database | PostgreSQL 16 (drivers: psycopg 3 for the dashboard, psycopg2 for the alert pipeline) |
-| AI runtime | Ollama, optional (default model in Docker: `qwen2.5:3b`) |
-| Frontend | Plain HTML, CSS and JavaScript, Chart.js (bundled) |
-| Deployment | Docker Compose: `db`, `api`, `ollama`, `ollama-init` |
+## Systems and their assets
 
-## Quick start (Docker)
+The demo seeds 12 assets across five systems. Each system has its own compatible measurements and events; actual seeded metric coverage varies by system. A shared location alone does not make two different systems one incident.
 
-Requirements: Docker Desktop (or Docker Engine with Compose v2) and Git.
-
-Run these commands from the repository root:
-
-```bash
-cp deploy/examples/.env.example .env    # then set PGPASSWORD (required)
-docker compose -f deploy/compose/docker-compose.yml up -d --build
-docker compose -f deploy/compose/docker-compose.yml ps
-```
-
-- Open **http://localhost:8000** for the dashboard.
-- `http://localhost:8000/docs` is the API explorer; `/health` is the liveness check.
-- On a **new, empty** database volume, PostgreSQL loads `db/init/anzma_schema_and_seed.sql`, then `db/migrations/003_incidents.sql`, `004_chat_views.sql`, and `005_alert_uniqueness.sql` automatically. No manual SQL is needed.
-- Without the model (first minutes while it downloads, or no internet) everything still works: explanations use the deterministic fallback and say so. Check the download with `docker compose -f deploy/compose/docker-compose.yml logs ollama-init`.
-- To skip Ollama entirely: `docker compose -f deploy/compose/docker-compose.yml up -d --build db api`.
-
-Reset to a clean seeded database:
-
-```bash
-docker compose -f deploy/compose/docker-compose.yml down -v
-docker compose -f deploy/compose/docker-compose.yml up -d --build
-```
-
-> **Warning:** `docker compose -f deploy/compose/docker-compose.yml down -v` permanently deletes the local PostgreSQL data and the downloaded Ollama models. The seed scripts only run on an empty volume, so use this after any seed change.
-
-## Demo walkthrough (scenario S1: server-room cooling failure)
-
-1. **Dashboard:** show the HVAC tile and CRAC Unit 1 in *Equipment health*. Status reflects the latest fault/recovery state; a recovered asset clears current Critical status, while its stored critical event and alert/incident history remain visible.
-2. **Trends:** the HVAC temperature chart shows the CRAC running about 9 °C above normal for 90 minutes.
-3. **Incidents:** open "HVAC temperature above threshold – CRAC Unit 1". The tag *Evidence verified in database 14 / 14* means every evidence row was re-read from `telemetry_records` and matched.
-4. **Live model path:** ensure Ollama and the configured Qwen model are ready, tick *Use local AI model*, and click *Explain*. Record the source and model shown by the application. A timeout or fallback is not a live-model pass.
-5. **Fallback path:** untick *Use local AI model* and explain again, or stop Ollama and retry. Confirm the deterministic source, evidence verification, grounding result, limitations and playbook actions.
-6. **Acknowledge / Resolve** the incident: its incident lifecycle changes independently of the asset's physical recovery state.
-7. **Assistant widget:** ask "Why is CRAC 1 temperature high?" or "What is wrong with the building?" (English or Arabic), then compare status and critical counts with the dashboard.
-
-The data window ends at the latest stored record (`as_of`), not the wall clock, and the seed is relative to when it was loaded, so the CRAC fault appears about 20 hours before the latest record. More detail is in `RUN_DEMO.md`.
-
-## Sample data
-
-| Data | Seeded |
-|---|---:|
-| Buildings | 2 (Main Tower, Data Center Annex) |
-| Locations | 6 |
-| Assets | 12 |
-| System types | 5 |
-| Metric types | 8 |
-| Event types | 12 |
-| Telemetry | about 78 hours at 15-minute intervals |
-| Heartbeats | hourly, with a configured camera-offline gap |
-
-All data is synthetic.
-
-## Windows PowerShell: terminal commands
-
-These are reproducible project commands, not a transcript of every command used during development.
-
-**1. Clone or update**
-
-```powershell
-Set-Location .\Anzma-Platform-Production
-```
-
-**2. Configure the environment**
-
-```powershell
-Copy-Item deploy/examples/.env.example .env
-notepad .env        # set PGPASSWORD; never commit .env
-```
-
-**3. Start the stack**
-
-```powershell
-docker compose -f deploy/compose/docker-compose.yml up -d --build
-docker compose -f deploy/compose/docker-compose.yml ps
-docker compose -f deploy/compose/docker-compose.yml logs --tail=100 db api
-Invoke-RestMethod -Uri http://localhost:8000/health
-Start-Process "http://localhost:8000"
-```
-
-**4. Try the API**
-
-```powershell
-Invoke-RestMethod -Uri "http://localhost:8000/dashboard/overview"
-
-$body = @{ message = "Why is CRAC 1 temperature high?"; use_llm = $false } | ConvertTo-Json
-Invoke-RestMethod -Uri "http://localhost:8000/chat" -Method Post -ContentType "application/json" -Body $body
-
-# run detection now (safe to repeat)
-Invoke-RestMethod -Uri "http://localhost:8000/alerts/run" -Method Post
-```
-
-**5. Check Ollama**
-
-```powershell
-docker compose -f deploy/compose/docker-compose.yml logs --tail=100 ollama-init
-docker compose -f deploy/compose/docker-compose.yml exec ollama ollama list
-```
-
-**6. Run the tests** (they need a real PostgreSQL; the user must be allowed to create databases, which `postgres` is)
-
-```powershell
-docker compose -f deploy/compose/docker-compose.yml exec -T api python tests/integration/test_frontend_api.py
-docker compose -f deploy/compose/docker-compose.yml exec -T api python tests/integration/test_chat_consistency.py
-docker compose -f deploy/compose/docker-compose.yml exec -T api python tests/integration/test_day2_integration.py
-docker compose -f deploy/compose/docker-compose.yml exec -T api python tests/unit/test_day2_ahmed.py
-```
-
-The offline tests also run on the host without any database:
-
-```powershell
-py -3.11 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-python tests\unit\test_day2_ahmed.py
-```
-
-S1 evidence run (builds a separate database named `anzma_e2e`):
-
-```powershell
-$env:PGHOST = "localhost"; $env:PGPORT = "5432"; $env:PGUSER = "postgres"
-$env:PGPASSWORD = "your-local-password"
-python tests\scenarios\e2e_s1.py --build    # add --llm to try Ollama
-```
-
-> **Database safety:** `--build` drops and recreates `anzma_e2e`, and the integration test recreates `anzma_day2_test`. Use these only for the dedicated test databases.
-
-**7. Stop**
-
-```powershell
-docker compose -f deploy/compose/docker-compose.yml down
-docker compose -f deploy/compose/docker-compose.yml down -v
-```
-
-**Optional: run the API on Windows against the Docker database.** Stop the Compose `api` first so port 8000 is free, set `PGHOST=localhost` in `.env`, then:
-
-```powershell
-docker compose -f deploy/compose/docker-compose.yml up -d db
-python -m uvicorn app.main:asgi_app --reload --host 127.0.0.1 --port 8000
-```
-
-## HTTP API
-
-Implemented in `app/main.py`, `app/api/frontend_api.py` and `app/api/chat_lite.py`. Full request and response shapes are in the interactive docs at `/docs`.
-
-| Method | Route | Purpose |
+| Dashboard system | Seeded assets | Example observations and fault/recovery events |
 |---|---|---|
-| GET | `/`, `/dashboard` | Browser dashboard |
-| GET | `/health` | Liveness only; it does **not** check the database |
-| GET | `/dashboard/filters` | Available buildings, systems and data coverage |
-| GET | `/dashboard/summary` | The eight KPI definitions and values (KPI engine shape) |
-| GET | `/dashboard/overview` | System tiles and KPI cards used by the page |
-| GET | `/dashboard/trends` | Time series for the charts |
-| GET | `/dashboard/equipment-health` | One health row per asset |
-| GET | `/alerts`, `/alerts/{id}` | Stored alerts, newest first, with evidence |
-| GET | `/incidents`, `/incidents/{id}` | Incidents |
-| GET | `/incidents/{id}/evidence` | Evidence rows and their verification result |
-| POST | `/incidents/{id}/status` | Acknowledge or resolve an incident |
-| POST | `/alerts/{id}/explain?use_llm=` | Explanation, grounding checks and recommendations |
-| POST | `/alerts/run` | Run detection now |
-| POST | `/alerts`, `/events` | Store an alert or event by hand |
-| POST | `/ask` | Narrow HVAC/CRAC question route (HTTP 501 for other topics) |
-| POST | `/chat`, GET `/chat/questions` | Assistant widget backend |
-| Socket.IO | `new_alert` | Live push of newly stored alerts |
+| **HVAC** | Air Handler 1, CRAC Unit 1, Chiller 1 | Temperature, humidity, and power telemetry; `hvac_fault` / `hvac_recovered`. CRAC Unit 1 is used in the cooling-failure scenario. |
+| **Network** | Core Switch 1, Access Point Lobby, Annex Switch | CPU load, packet loss, and bandwidth utilization; `link_down` / `link_up`. |
+| **Access control** | Main Door Reader, Server Room Reader | Door-forced, door-held-open, and access-denied events. The seeded catalogue has no generic close event for every access event, so incident resolution is the operator's acknowledgement that the related problem was handled. |
+| **CCTV** | Lobby Camera, Control Room Camera | Camera FPS telemetry, camera offline/online events, and heartbeats. `camera_offline` / `camera_online` is a paired fault/recovery signal; silence and stale heartbeat data also affect health. |
+| **Fire alarm** | Fire Panel Main, Smoke Detector Server Room | Smoke-level telemetry and `fire_alarm_triggered` / `alarm_cleared` events. |
 
-The eight KPIs are: monitored assets, healthy assets %, alerts raised, critical alerts, alert rate per hour, average zone temperature, average packet loss and heartbeat compliance.
+The system catalogue, asset names, metric/event names, and compatibility rules are defined by the database seed. The dashboard translates database codes such as `NETWORKING` and `ACCESS_CONTROL` into the labels **Network** and **Access control** in [`app/api/frontend_api.py`](../app/api/frontend_api.py).
 
-`/dashboard/summary` accepts `system_type` (`HVAC`, `NETWORKING`, `ACCESS_CONTROL`, `CCTV`, `FIRE_ALARM`), `building_id`, and UTC `start_time` / `end_time`. The interval is start-inclusive, end-exclusive, and limited to 31 days.
+### How alerts become incidents
 
-**About `/chat` and the model:** the assistant tries Ollama by default (`CHAT_USE_LLM=true`) and falls back to the deterministic path if the model is unavailable. Set `use_llm` to `false` in the request, or `CHAT_USE_LLM=false`, to force the deterministic path.
+- An **alert** is a detection by one rule on one asset. It has a severity (`info`, `warning`, or `critical`), evidence, and a lifecycle status.
+- An **incident** is the operator-facing record that groups related alerts. The current grouping rule links alerts on the same asset, or on the same system type in the same location, when their time ranges overlap or are within 15 minutes.
+- Alerts from different systems are not grouped just because they share a room. For example, a switch and a door reader in the same server room are not automatically treated as one incident.
+- Incident severity is the highest severity among its linked alerts.
+- The lifecycle is `open → acknowledged → resolved`; `resolved` is final. Acknowledge and Resolve update the incident and its linked alert records in the same transaction. The grouping and lifecycle rules are implemented in [`app/domain/incidents/incident_engine.py`](../app/domain/incidents/incident_engine.py).
 
-### What the explanation status means
+## Understanding dashboard status and charts
 
-The successful status is `grounding_supported`, not "validated". It means the implemented grounding checks passed: citations, numbers, times, evidence references, supported causes and approved playbook actions were checked against the stored evidence. It is **not** a guarantee that the reasoning is semantically correct, because no independent semantic validation stage exists yet.
+The dashboard has several views because event volume, asset condition, and incident workflow answer different questions. They share asset identities and refresh after an incident status change, but their numbers are not interchangeable.
 
-## Repository structure
+### System status and System health chart
 
-```text
-Anzma-Platform-Production/
-├── app/main.py                  # FastAPI app, routes, Socket.IO, detection loop
-├── app/api/                     # dashboard, chat and frontend API routes
-├── app/domain/                  # alerts, incidents, evidence, AI and operations
-├── app/adapters/                # PostgreSQL and Ollama adapters
-├── app/repositories/            # KPI/dashboard queries
-├── app/config/                  # reference data
-├── app/dashboard/static/        # dashboard, chat widget, styles and Chart.js
-├── db/init/                     # authoritative runtime schema and seed
-├── db/migrations/               # numbered SQL migrations
-├── tests/{unit,integration,scenarios}/
-├── deploy/compose/              # Dockerfile and Compose configuration
-├── deploy/examples/             # safe environment example
-├── docs/                        # architecture, verification and handover records
-└── legacy/                      # retained old-schema API modules
+The system tiles summarize the health of the assets in each system. The stacked **System health (assets by status)** bar chart shows those same asset counts:
+
+- **Green / OK:** assets currently classified as normal.
+- **Amber / Warning:** assets with an active warning alert or warning fault, a recent unresolved warning event, or a data-freshness problem.
+- **Red / Critical:** assets with an active critical alert or fault condition.
+- **Gray / No data or Unknown:** assets with no recent reporting or no reporting history, when those categories are present.
+
+The shared health rules are in [`app/repositories/dashboard_core_pg.py`](../app/repositories/dashboard_core_pg.py). The per-asset equipment-health response applies the same alert and recovery relationships in [`app/api/frontend_api.py`](../app/api/frontend_api.py).
+
+Incident lifecycle affects health through the linked alerts. Open and acknowledged alerts contribute to the asset's Warning or Critical state. Resolving an incident resolves its linked alerts and retires matching fault observations covered by those alerts. A newer fault event can make the asset Warning or Critical again. Explicit recovery events, such as `camera_online` or `link_up`, also clear the corresponding paired fault state. No data and never-reported assets remain visible as separate health conditions; resolving an incident does not manufacture telemetry or a heartbeat.
+
+The system tiles and health chart are refreshed from `GET /dashboard/overview`; the equipment table is refreshed from `GET /dashboard/equipment-health`. The overall tile is Critical if any asset is Critical, Warning when warning/no-data/unknown assets remain, and Operational when assets are healthy. If every asset is unknown, the tile is Unknown. The status aggregation and chart rendering are implemented in [`app/api/frontend_api.py`](../app/api/frontend_api.py) and [`app/dashboard/static/dashboard.html`](../app/dashboard/static/dashboard.html).
+
+### Incidents by asset chart
+
+The **Incidents by asset** stacked bar chart groups incident records by each affected asset:
+
+- **Green:** resolved incidents (kept as history).
+- **Amber:** active Warning incidents (`open` or `acknowledged`).
+- **Red:** active Critical incidents (`open` or `acknowledged`).
+- **Gray:** active Info incidents.
+
+An incident connected to more than one asset through its alerts appears against each affected asset. The chart uses incident lifecycle and severity, while the System health chart shows the asset's operational state. This means the charts can legitimately differ: a resolved incident can move from an active incident segment to the green Resolved segment, while the asset remains Warning if it still has a newer fault or stale data.
+
+Incident bars are returned as `incident_bars` by `GET /dashboard/overview` and are grouped in [`app/api/frontend_api.py`](../app/api/frontend_api.py); the dashboard renders them in [`app/dashboard/static/dashboard.html`](../app/dashboard/static/dashboard.html). The incident chart shows all stored incident history and is filtered by the selected system; it is not limited to the selected telemetry time window.
+
+### Trend charts
+
+| Chart | What it counts or measures | Source |
+|---|---|---|
+| **Events by system** (stacked bars) | Non-heartbeat events grouped into time buckets by system. | `event_records` |
+| **HVAC average temperature** (line) | Average temperature by bucket. | Temperature telemetry |
+| **Network bandwidth utilization** (line) | Average and peak utilization by bucket. | Bandwidth telemetry |
+| **Denied access attempts** (bars) | Denied attempts by bucket. The seed does not store granted attempts, so no fake zero series is drawn. | `event_records` |
+
+The trend endpoint is `GET /dashboard/trends`. Its bucket size adapts to the selected time window, and it excludes routine heartbeats from event counts. These charts use the time-window filter; the incidents-by-asset chart reflects incident lifecycle history instead.
+
+### Filters, Alert Center, and refresh behavior
+
+- The top system filter redraws the health chart for the selected system and filters the trend and incident-chart data. System status tiles continue to show all five systems so they remain available as filters.
+- The time filter changes the fact-data window used by trend and health calculations. “Now” is anchored to the latest stored observation, not the computer clock.
+- The Alert Center displays unresolved alerts and filters by severity and system. Resolved alerts leave the active list; their history remains available through Incidents.
+- Clicking **Open incident #…** on an alert loads that incident's details, evidence, and status controls.
+- After an operator acknowledges or resolves an incident, the dashboard reloads incidents, the Alert Center, system health, and charts. Socket.IO broadcasts newly detected alerts to connected dashboards; lifecycle changes are refreshed by the page that performed the action.
+
+The page is [`app/dashboard/static/dashboard.html`](../app/dashboard/static/dashboard.html), with Alert Center styles in [`app/dashboard/static/style.css`](../app/dashboard/static/style.css). Dashboard responses are implemented by [`app/api/frontend_api.py`](../app/api/frontend_api.py); Socket.IO and lifecycle routes are in [`app/main.py`](../app/main.py).
+
+### Why Alert Center and KPI counts can differ
+
+The **Alert Center** lists detected alert records that are still open or acknowledged; resolved alerts are hidden from this active view. The **Alerts raised** and **Critical alerts** KPI cards count warning/critical rows in `event_records` within the selected time window. They are event counts, not counts of open Alert Center rows. The **Open incidents** KPI counts incidents whose lifecycle is not resolved across the database, regardless of the selected time window or system. These definitions come from [`app/api/frontend_api.py`](../app/api/frontend_api.py) and [`app/repositories/dashboard_core_pg.py`](../app/repositories/dashboard_core_pg.py).
+
+## Run locally with Docker Compose
+
+### Requirements
+
+- Docker Desktop or Docker Engine with Compose v2.
+- A local `.env` file with a non-empty PostgreSQL password.
+
+### Start
+
+From the repository root:
+
+```bash
+cp deploy/examples/.env.example .env
+# Edit .env and set PGPASSWORD to a local password.
+docker compose --env-file .env -p anzma-insight -f deploy/compose/docker-compose.yml up -d --build
 ```
 
-`data-model.sql` is an earlier draft, not the schema the database is built from. The schema that runs is `db/init/anzma_schema_and_seed.sql`.
+Open [http://localhost:8000](http://localhost:8000) for the dashboard and [http://localhost:8000/docs](http://localhost:8000/docs) for the API. The explicit `--env-file .env` and `-p anzma-insight` ensure Compose reads the root configuration and targets the same project when you later rebuild a service.
 
-## Verification status (2026-11-12)
+To rebuild only the API after changing application or dashboard files:
 
-| Suite | Latest result | Notes |
-|---|---:|---|
-| Frontend API tests | **17/17 passed** | Docker run; includes fallback, recovered-asset status and explicit Unknown/no-data cases. See `TEST_RESULTS_FRONTEND_API.txt`. |
-| Chat/dashboard consistency | **31/31 passed** | Five systems, counts, labels, critical KPI, citations and status wording. See `TEST_RESULTS_CHAT_CONSISTENCY.txt`. |
-| Offline tests | 25/25 recorded | Previous recorded run; not rerun in this verification. |
-| PostgreSQL Day 2 integration tests | 43/43 recorded | Previous reported run; not rerun in this verification. See `TEST_RESULTS_DAY2.txt`. |
+```bash
+docker compose --env-file .env -p anzma-insight -f deploy/compose/docker-compose.yml up -d --build api
+```
 
-The previous API image run used the former entry point. Its recorded HTTP checks do not verify the current moved tree. The integrated output logged Ollama timeouts, so live Qwen inference has **not** been demonstrated as passing. The fallback path was reported as passing. The current tree still requires a fresh execution check.
+The PostgreSQL initialization scripts run only when the database volume is empty. Existing volumes are not reseeded automatically. Avoid `down -v` for routine restarts: it deletes the local PostgreSQL data and downloaded Ollama models. Compose services and initialization mounts are defined in [`deploy/compose/docker-compose.yml`](../deploy/compose/docker-compose.yml).
 
-The repository is ready for the teammate to run from this folder with the intended `.env` and Compose setup. The recorded API tests used the local Compose PostgreSQL service.
+If Ollama or its model is unavailable, database-backed dashboard features continue to work and explanations can use the deterministic fallback. The AI runtime is optional for normal dashboard operation.
 
-## Known limitations
+## Main API endpoints
 
-- **Simulated data only.** No live devices or external building-management systems.
-- **Playbook approval record.** Amr reports that the engineering owner approved the HVAC playbook. Confirm whether sign-off covers the other system playbooks before presenting their recommendations as approved.
-- **Live-model demonstration outstanding.** The current test run recorded Ollama timeouts. Capture a successful integrated Qwen run separately from fallback before claiming live inference passed.
-- **Bandwidth units.** `bandwidth_util` is stored as a percentage, but the bandwidth alert thresholds in `alert_config.py` (900 and 980) look like Mbps values. Treat bandwidth alerts as unreliable until the units are reconciled. The chart was relabelled to "utilisation (%)".
-- **API contract mismatch.** `API_CONTRACT.md` and the submission document describe a proposed `/api/v1` interface (batch ingestion, `/api/v1/assistant/query`). It is **not implemented**. Use the HTTP API section above and `/docs` as the source of truth.
-- **No authentication.** The API, database and Ollama ports are published by Compose, and Socket.IO allows any origin. Do not expose the stack to an untrusted network.
-- **Narrow assistant.** `/chat` and `/ask` answer a limited set of grounded questions, mainly building status, alert and camera counts, and HVAC/CRAC. A general tool router is a later step.
-- **Grounding, not semantic validation.** See the status explanation above.
-- **Model default:** Docker Compose, `.env.example`, `ai_explainer.py`, and `chat_lite.py` use `qwen2.5:3b` when `OLLAMA_MODEL` is unset. Set `OLLAMA_MODEL` in `.env` when selecting another installed model.
-- **Incidents stay open** until someone acknowledges or resolves them, even if the physical condition ended. A resolved incident is final; a later fault opens a new one.
-- **Limited signals.** The data has no fan state, filter fault, battery, motion or access-granted signals, and access-denial events carry no reason, so related explanations are marked `partial` data sufficiency.
-- **`/health` is liveness only.** It does not verify PostgreSQL or Ollama.
-- **Socket.IO is loaded from a CDN.** Offline, the alert center still loads from `/alerts` but live push shows "offline".
-- **Two database drivers.** The operational adapter uses psycopg2 while dashboard queries use psycopg 3. Unifying them is planned cleanup.
-- **Legacy files.** `chat_engine.py`, `chat_api.py` and `dashboard_api.py` in the repository root belong to the old schema and are unused.
-
-## Team workflow
-
-| Rule | Detail |
+| Endpoint | Purpose |
 |---|---|
-| Branches | `main` holds the earlier integration build; `final` is the submission build. Feature branches use `feat/<module>-<owner>`. |
-| Reviews | The other engineer reviews every pull request. |
-| Database changes | Always a new numbered migration (`004_...sql`); never edit an applied one. |
-| Secrets | `.env` is git-ignored. Never commit it. |
+| `GET /dashboard/overview` | System status, KPIs, and incident-chart data. Accepts `hours` and `system_type`. |
+| `GET /dashboard/trends` | Event and telemetry time series. Accepts `hours` and `system_type`. |
+| `GET /dashboard/equipment-health` | Per-asset status and last-seen information. |
+| `GET /alerts` | Alert Center records, including status and linked incident ID. |
+| `GET /incidents` | Ranked incidents and their linked alert IDs. |
+| `GET /incidents/{id}` | Incident details and recommended actions. |
+| `POST /incidents/{id}/status` | Acknowledge or resolve an incident and its linked alerts. |
+| `GET /incidents/{id}/evidence` | Re-verified evidence for the incident. |
+| `POST /alerts/{id}/explain` | Evidence-grounded explanation, with optional local model use. |
 
-## Design documents
+For ingestion, validation, and full response shapes, use the running API documentation at `/docs`. The API contract and longer-term design notes are in [`docs/API_CONTRACT.md`](API_CONTRACT.md) and [`docs/ARCHITECTURE.md`](ARCHITECTURE.md); those documents include proposed features, so check the implementation links above for current behavior.
 
-[Architecture](ARCHITECTURE.md) · [Data model](DATA_MODEL.md) · [Decision matrix](DECISION_MATRIX.md) · [API contract (proposed)](API_CONTRACT.md) · [Integration plan](INTEGRATION_PLAN.md) · [Run and demo guide](RUN_DEMO.md) · [Day 2 handover](DAY2_AHMED_HANDOVER.md) · [Test results](TEST_RESULTS_DAY2.txt)
+## Repository map
 
-## Authors
+| Path | Responsibility |
+|---|---|
+| [`app/main.py`](../app/main.py) | FastAPI application, routes, startup detection, and live alert broadcast. |
+| [`app/api/frontend_api.py`](../app/api/frontend_api.py) | Dashboard, alert, trend, incident-chart, and equipment-health API responses. |
+| [`app/domain/alerts/`](../app/domain/alerts/) | Alert rules, thresholds, and detection behavior. |
+| [`app/domain/incidents/incident_engine.py`](../app/domain/incidents/incident_engine.py) | Alert grouping, incident lifecycle, and status propagation. |
+| [`app/repositories/dashboard_core_pg.py`](../app/repositories/dashboard_core_pg.py) | Shared asset-health and KPI calculations. |
+| [`app/dashboard/static/`](../app/dashboard/static/) | Dashboard HTML, CSS, JavaScript, and bundled chart library. |
+| [`app/adapters/database/db_adapter.py`](../app/adapters/database/db_adapter.py) | Shared database operations and idempotent alert storage. |
+| [`db/init/`](../db/init/) and [`db/migrations/`](../db/migrations/) | Initial schema, synthetic data, and schema changes. |
+| [`tests/`](../tests/) | Unit, integration, and scenario checks. |
+| [`deploy/compose/`](../deploy/compose/) | Docker image and Compose services. |
+| [`docs/`](./) | Run guide, data model, architecture, and project history. |
 
-Ahmed and Amr – Anzma Tech.
+## Project status and limitations
+
+- The default dataset is synthetic and is loaded only when PostgreSQL initializes an empty volume.
+- The demo does not authenticate users or directly connect to building devices.
+- Incident resolution is an operator workflow state; linked alert records and covered fault observations are updated, but missing/stale data can still leave the asset in Warning.
+- Recommendations are advisory. The application does not execute actions on HVAC, networking, access, CCTV, or fire-alarm equipment.
+- Historical verification notes in `docs/` describe their recorded runs; they are not evidence that the current workspace or container has just been tested.
