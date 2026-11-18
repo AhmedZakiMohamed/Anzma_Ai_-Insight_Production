@@ -67,7 +67,9 @@ The endpoint accepts a message and optional time-window, model, history, and ses
 
 The assistant should explain available evidence. Successful Ollama/Qwen execution through the integrated application remains unverified and is a Sprint 1 acceptance item.
 
-## 6. Future connector ingestion interface — proposed, not implemented
+## 6. Superseded connector ingestion draft
+
+This section is retained as historical planning text. The versioned connector endpoint is now implemented and its authoritative contract is [`INGESTION_CONTRACT.md`](INGESTION_CONTRACT.md); do not use the draft payload/path decisions below.
 
 A versioned interface for normalized IoT observations must define:
 

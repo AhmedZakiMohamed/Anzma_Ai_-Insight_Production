@@ -1,6 +1,9 @@
 import os
+import re
+import json
 from typing import Any
 from datetime import datetime, timedelta, timezone
+from uuid import UUID
 
 
 import asyncio
@@ -10,11 +13,11 @@ import psycopg2
 import psycopg2.extras
 import socketio
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from psycopg import OperationalError
 
 from app.repositories.dashboard_core_pg import (
@@ -33,6 +36,7 @@ from app.domain.alerts import alert_config as cfg
 from app.domain.evidence import evidence as evd
 from app.domain.incidents import incident_engine as inc
 from app.services import pipeline
+from app.services import ingestion
 
 
 # Every route below is registered on `api`; `asgi_app` (bottom of the file) wraps it with Socket.IO for live alerts.
@@ -276,6 +280,154 @@ api.include_router(frontend_api.create_router())
 api.include_router(chat_lite.create_router(
     day2_connect, pipeline, inc, use_llm_default=os.getenv("CHAT_USE_LLM", "true").lower() == "true",
     db_errors=DB_ERRORS))
+
+
+class IngestionConnector(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    name: str = Field(min_length=1, max_length=64)
+    version: str = Field(min_length=1, max_length=32)
+
+
+class IngestionSource(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    source_code: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+    connector: IngestionConnector
+
+
+class IngestionBatch(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    contract_version: str
+    batch_id: str
+    sent_at: str
+    source: IngestionSource
+    building_code: str
+    records: list[Any]
+    delivery_mode: str = "LIVE"
+
+    @field_validator("contract_version")
+    @classmethod
+    def _contract_version(cls, value):
+        if not re.fullmatch(r"\d+\.\d+", value):
+            raise ValueError("contract_version must use MAJOR.MINOR format")
+        return value
+
+    @field_validator("batch_id")
+    @classmethod
+    def _batch_id(cls, value):
+        try:
+            return str(UUID(value))
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise ValueError("batch_id must be a UUID") from exc
+
+    @field_validator("sent_at")
+    @classmethod
+    def _sent_at_format(cls, value):
+        if not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,6})?Z", value):
+            raise ValueError("sent_at must be RFC 3339 UTC with a trailing Z")
+        return value
+
+    @field_validator("records")
+    @classmethod
+    def _record_count(cls, value):
+        if len(value) > ingestion.MAX_RECORDS:
+            raise ValueError("records must contain no more than 5000 items")
+        return value
+
+
+def _ingestion_schema_ready(cur):
+    cur.execute("SELECT to_regclass('public.data_sources') AS sources")
+    return cur.fetchone()["sources"] is not None
+
+
+def _ingestion_error_response(exc: ingestion.IngestionError):
+    return JSONResponse(status_code=exc.status, content=exc.response(exc.batch_id))
+
+
+@api.post("/api/v1/ingest/batches", tags=["Ingestion"])
+def ingest_batch(body: IngestionBatch, request: Request,
+                 authorization: str | None = Header(default=None)):
+    """Ingest a canonical batch. Existing POST /events and POST /alerts remain unchanged."""
+    batch_id = body.batch_id
+    try:
+        content_length = int(request.headers.get("content-length", "0") or 0)
+    except ValueError:
+        return JSONResponse(status_code=400, content={"error": {"code": "INVALID_CONTENT_LENGTH",
+                                                                   "message": "Content-Length must be an integer.",
+                                                                   "retryable": False}})
+    if content_length > 5 * 1024 * 1024:
+        return JSONResponse(status_code=413, content=ingestion.IngestionError(
+            413, "BATCH_TOO_LARGE", "Request body exceeds 5 MiB.", batch_id=batch_id).response())
+    body_size = len(json.dumps(body.model_dump(mode="json"), ensure_ascii=False,
+                               separators=(",", ":")).encode("utf-8"))
+    if body_size > 5 * 1024 * 1024:
+        return JSONResponse(status_code=413, content=ingestion.IngestionError(
+            413, "BATCH_TOO_LARGE", "Request body exceeds 5 MiB.", batch_id=batch_id).response())
+    try:
+        conn = day2_connect()
+        try:
+            with conn.cursor() as cur:
+                if not _ingestion_schema_ready(cur):
+                    raise ingestion.IngestionError(503, "INGESTION_SCHEMA_NOT_APPLIED",
+                                                   "Apply database migration 006 before using Core ingestion.",
+                                                   retryable=False, batch_id=batch_id)
+                source = ingestion.authenticate(cur, authorization)
+                try:
+                    result, replay = ingestion.process_batch(
+                        cur, source, body.model_dump(mode="json"), datetime.now(timezone.utc))
+                except ingestion.IngestionError:
+                    conn.commit()  # retain last_used_at for a valid credential; no fact rows are written on envelope errors
+                    raise
+                conn.commit()
+                headers = {"Idempotent-Replay": "true"} if replay else {}
+                status = 422 if result["status"] == "REJECTED" else 200
+                return JSONResponse(status_code=status, content=jsonable_encoder(result), headers=headers)
+        except ingestion.IngestionError as exc:
+            return _ingestion_error_response(exc)
+        finally:
+            conn.close()
+    except DB_ERRORS as exc:
+        logger.warning("ingestion database unavailable: %s", str(exc).strip()[:200])
+        return JSONResponse(status_code=503, content=ingestion.IngestionError(
+            503, "SERVICE_UNAVAILABLE", "Database is unavailable; retry the same batch_id.",
+            retryable=True, batch_id=batch_id).response())
+
+
+@api.get("/api/v1/ingest/batches/{batch_id}", tags=["Ingestion"])
+def get_ingestion_batch(batch_id: str, authorization: str | None = Header(default=None)):
+    """Return the recorded per-record outcomes and complete rejection payloads for this source's batch."""
+    try:
+        try:
+                batch_uuid = str(UUID(batch_id))
+        except (ValueError, TypeError, AttributeError):
+            raise ingestion.IngestionError(422, "SCHEMA_INVALID", "batch_id must be a UUID.", batch_id=batch_id)
+        with day2_connect() as conn:
+            with conn.cursor() as cur:
+                if not _ingestion_schema_ready(cur):
+                    raise ingestion.IngestionError(503, "INGESTION_SCHEMA_NOT_APPLIED",
+                                                   "Apply database migration 006 before using Core ingestion.",
+                                                   retryable=False, batch_id=batch_id)
+                source = ingestion.authenticate(cur, authorization)
+                cur.execute("""SELECT response_payload FROM ingestion_batches
+                               WHERE source_id=%s AND batch_id=%s""", (source["source_id"], batch_uuid))
+                row = cur.fetchone()
+                if not row:
+                    raise ingestion.IngestionError(404, "BATCH_NOT_FOUND", "Batch was not found for this source.",
+                                                   batch_id=str(batch_uuid))
+                result = dict(row["response_payload"])
+                cur.execute("""SELECT record_index,record_type,reason_code,message,payload
+                               FROM ingestion_rejections WHERE ingestion_batch_id=
+                               (SELECT ingestion_batch_id FROM ingestion_batches WHERE source_id=%s AND batch_id=%s)
+                               ORDER BY record_index""", (source["source_id"], batch_uuid))
+                result["rejected"] = [dict(item) for item in cur.fetchall()]
+                result["rejected_truncated"] = False
+                conn.commit()
+                return result
+    except ingestion.IngestionError as exc:
+        return _ingestion_error_response(exc)
+    except DB_ERRORS as exc:
+        logger.warning("ingestion batch lookup unavailable: %s", str(exc).strip()[:200])
+        return JSONResponse(status_code=503, content=ingestion.IngestionError(
+            503, "SERVICE_UNAVAILABLE", "Database is unavailable.", retryable=True, batch_id=batch_id).response())
 
 
 @api.post("/alerts/run", tags=["Alerts"])

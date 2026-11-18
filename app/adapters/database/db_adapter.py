@@ -126,7 +126,7 @@ def load_context(cur, end, history_days=7):
                                   "details": details})
 
     cur.execute("""SELECT t.telemetry_id, t.asset_id, t.ts, m.name AS metric, t.value
-                   FROM telemetry_records t JOIN metric_types m USING (metric_id)
+                   FROM v_telemetry_valid t JOIN metric_types m USING (metric_id)
                    WHERE t.ts > %s AND t.ts <= %s AND m.name IN ('temperature','bandwidth_util','packet_loss')
                    ORDER BY t.ts, t.telemetry_id""", (base, end))
     loss = {}
@@ -151,7 +151,7 @@ def load_context(cur, end, history_days=7):
 
 
 def latest_ts(cur):
-    cur.execute("""SELECT GREATEST((SELECT max(ts) FROM telemetry_records), (SELECT max(ts) FROM event_records)) AS t""")
+    cur.execute("""SELECT GREATEST((SELECT max(ts) FROM v_telemetry_valid), (SELECT max(ts) FROM event_records)) AS t""")
     return cur.fetchone()["t"]
 
 

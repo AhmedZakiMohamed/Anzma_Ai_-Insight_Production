@@ -1,21 +1,29 @@
 -- verify_schema.sql -- READ-ONLY catalog check of a live database against the authoritative schema
--- (base schema -> 003 -> 004 -> 005; see DATABASE_BASELINE.md). Changes nothing: SELECT only.
+-- (base schema -> 003 -> 004 -> 005 -> 006; see DATABASE_BASELINE.md). Changes nothing: SELECT only.
 -- Run:  psql -U anzma -d <db> -f verify_schema.sql        (every row must show status = OK)
 -- Exit status of psql is not affected by a failed check; read the status column (final row = overall verdict).
 WITH expected_tables(name) AS (VALUES
   ('buildings'),('locations'),('system_types'),('assets'),('metric_types'),('event_types'),
   ('metric_type_system_compat'),('event_type_system_compat'),('telemetry_records'),('event_records'),
-  ('alerts'),('incidents'),('scenario_runs')),
+  ('alerts'),('incidents'),('scenario_runs'),('schema_migrations'),('data_sources'),('source_credentials'),
+  ('asset_external_ids'),('ingestion_batches'),('ingestion_rejections'),('equipment_state_records')),
 expected_views(name) AS (VALUES
-  ('v_data_clock'),('v_asset_overview'),('v_incident_overview'),('v_alert_overview'),('v_camera_status')),
+  ('v_data_clock'),('v_asset_overview'),('v_incident_overview'),('v_alert_overview'),('v_camera_status'),
+  ('v_telemetry_valid'),('v_asset_current_state')),
 expected_indexes(name) AS (VALUES
   ('idx_assets_location'),('idx_assets_system_type'),('idx_telemetry_ts'),('idx_event_ts'),('idx_event_asset_ts'),
   ('idx_alerts_first_ts'),('idx_alerts_asset_ts'),('idx_alerts_severity'),('idx_alerts_open'),
-  ('idx_alerts_incident'),('idx_incidents_location_last'),('idx_incidents_status'),('uq_alerts_rule_asset_first_ts')),
+  ('idx_alerts_incident'),('idx_incidents_location_last'),('idx_incidents_status'),('uq_alerts_rule_asset_first_ts'),
+  ('uq_buildings_building_code'),('idx_source_credentials_source_active'),('idx_asset_external_ids_asset'),
+  ('uq_event_source_event_id'),('idx_telemetry_source_received'),('idx_event_source_received'),
+  ('idx_equipment_state_asset_observed')),
 expected_columns(tbl, col) AS (VALUES
   ('alerts','incident_id'),('alerts','evidence'),('alerts','resolved_ts'),('alerts','explanation'),
   ('alerts','explanation_source'),('alerts','explained_at'),('incidents','grouping_rule'),
-  ('telemetry_records','value'),('event_records','details'),('scenario_runs','expected_rules')),
+  ('telemetry_records','value'),('telemetry_records','quality'),('telemetry_records','source_id'),
+  ('event_records','details'),('event_records','source_event_id'),('scenario_runs','expected_rules'),
+  ('source_credentials','key_hash'),('asset_external_ids','external_id'),('ingestion_batches','payload_sha256'),
+  ('ingestion_rejections','payload'),('equipment_state_records','observed_at')),
 checks AS (
   SELECT 1 AS n, 'tables missing' AS check_name, '0' AS expected,
          (SELECT count(*) FROM expected_tables e WHERE NOT EXISTS

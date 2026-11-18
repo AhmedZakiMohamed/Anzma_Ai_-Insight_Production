@@ -139,7 +139,7 @@ To rebuild only the API after changing application or dashboard files:
 docker compose --env-file .env -p anzma-insight -f deploy/compose/docker-compose.yml up -d --build api
 ```
 
-The PostgreSQL initialization scripts run only when the database volume is empty. Existing volumes are not reseeded automatically. Avoid `down -v` for routine restarts: it deletes the local PostgreSQL data and downloaded Ollama models. Compose services and initialization mounts are defined in [`deploy/compose/docker-compose.yml`](../deploy/compose/docker-compose.yml).
+The PostgreSQL initialization scripts run only when the database volume is empty. Existing volumes are not reseeded automatically; migration 006 for an existing database uses the runner documented in [`DATA_MIGRATION_PLAN.md`](DATA_MIGRATION_PLAN.md). Avoid `down -v` for routine restarts: it deletes the local PostgreSQL data and downloaded Ollama models. Compose services and initialization mounts are defined in [`deploy/compose/docker-compose.yml`](../deploy/compose/docker-compose.yml).
 
 If Ollama or its model is unavailable, database-backed dashboard features continue to work and explanations can use the deterministic fallback. The AI runtime is optional for normal dashboard operation.
 
@@ -156,8 +156,10 @@ If Ollama or its model is unavailable, database-backed dashboard features contin
 | `POST /incidents/{id}/status` | Acknowledge or resolve an incident and its linked alerts. |
 | `GET /incidents/{id}/evidence` | Re-verified evidence for the incident. |
 | `POST /alerts/{id}/explain` | Evidence-grounded explanation, with optional local model use. |
+| `POST /api/v1/ingest/batches` | Authenticated, versioned batch ingestion for telemetry, events, and equipment state. |
+| `GET /api/v1/ingest/batches/{batch_id}` | Retrieve batch outcomes and full rejected-record audit for the authenticated source. |
 
-For ingestion, validation, and full response shapes, use the running API documentation at `/docs`. The API contract and longer-term design notes are in [`docs/API_CONTRACT.md`](../docs/API_CONTRACT.md) and [`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md); those documents include proposed features, so check the implementation links above for current behavior.
+The v1 ingestion contract, response semantics, API-key lifecycle, and provisioning steps are in [`INGESTION_CONTRACT.md`](INGESTION_CONTRACT.md). Existing `POST /events` and `POST /alerts` routes remain supported.
 
 ## Repository map
 

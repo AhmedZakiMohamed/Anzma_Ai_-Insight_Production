@@ -1,12 +1,16 @@
 """
 test_frontend_api.py - the API the dashboard page calls, tested on a REAL PostgreSQL built from the files Docker uses:
-db/init/anzma_schema_and_seed.sql, then db/migrations/003_incidents.sql, 004_chat_views.sql and 005_alert_uniqueness.sql.
+db/init/anzma_schema_and_seed.sql, then db/migrations/003 incidents, 004 views, 005 alert uniqueness and 006 ingestion.
 
 Run:  PGHOST=localhost PGUSER=postgres PGPASSWORD=... python test_frontend_api.py      (user may CREATE DATABASE)
 """
 import os
 import sys
 from datetime import timedelta
+from datetime import datetime, timezone
+import hashlib
+import secrets
+import uuid
 
 TEST_DB = "anzma_api_test"
 HOST, PORT = os.getenv("PGHOST", "localhost"), os.getenv("PGPORT", "5432")
@@ -28,7 +32,7 @@ with psycopg.connect(host=HOST, port=PORT, user=USER, password=PASSWORD, dbname=
 DB = psycopg.connect(host=HOST, port=PORT, user=USER, password=PASSWORD, dbname=TEST_DB, row_factory=dict_row,
                      autocommit=True)
 DB.execute(sql_file("db/init/anzma_schema_and_seed.sql"))
-for _m in ("003_incidents", "004_chat_views", "005_alert_uniqueness"):   # same sequence as the runtime schema
+for _m in ("003_incidents", "004_chat_views", "005_alert_uniqueness", "006_ingestion_foundation"):   # runtime sequence
     DB.execute(sql_file(f"db/migrations/{_m}.sql"))
 
 os.environ.update(PGHOST=HOST, PGPORT=PORT, PGUSER=USER, PGPASSWORD=PASSWORD, PGDATABASE=TEST_DB)
@@ -48,6 +52,70 @@ def test(name):
 
 def one(sql, *params):
     return DB.execute(sql, params).fetchone()
+
+
+def _ingestion_setup():
+    asset = one("""SELECT a.asset_code, a.asset_id, a.system_type_id, l.building_id
+                  FROM assets a JOIN locations l USING(location_id)
+                  JOIN system_types st USING(system_type_id) WHERE st.code='HVAC' ORDER BY a.asset_id LIMIT 1""")
+    metric = one("""SELECT m.name, m.unit FROM metric_types m JOIN metric_type_system_compat c USING(metric_id)
+                  WHERE c.system_type_id=%s ORDER BY m.metric_id LIMIT 1""", asset["system_type_id"])
+    building_code = "API-INGEST-TEST"
+    DB.execute("UPDATE buildings SET building_code=%s WHERE building_id=%s", (building_code, asset["building_id"]))
+    source_code = "api-ingest-test"
+    DB.execute("""INSERT INTO data_sources(source_code,building_id,connector_name,connector_version)
+                   VALUES (%s,%s,'integration-test','1')""", (source_code, asset["building_id"]))
+    token = f"azk_{secrets.token_hex(6)}_{secrets.token_urlsafe(32)}"
+    DB.execute("""INSERT INTO source_credentials(source_id,key_prefix,key_hash)
+                   SELECT source_id,%s,%s FROM data_sources WHERE source_code=%s""",
+               (token.split("_")[1], hashlib.sha256(token.encode()).hexdigest(), source_code))
+    return asset, metric, building_code, source_code, token
+
+
+@test("v1 ingestion: auth, per-record partial commit, replay, audit retrieval and immutable conflict")
+def _():
+    asset, metric, building_code, source_code, token = _ingestion_setup()
+    auth = {"Authorization": f"Bearer {token}"}
+    observed_at = "2000-01-01T00:00:00Z"
+    good = {"record_type": "telemetry", "asset": {"asset_code": asset["asset_code"]},
+            "observed_at": observed_at, "metric_code": metric["name"], "value": 12.5, "unit": metric["unit"]}
+    bad = {**good, "value": 13.5, "unit": "wrong-unit"}
+    batch_id = str(uuid.uuid4())
+    body = {"contract_version": "1.0", "batch_id": batch_id,
+            "sent_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+            "source": {"source_code": source_code, "connector": {"name": "integration-test", "version": "1"}},
+            "building_code": building_code, "records": [good, bad]}
+    assert client.post("/api/v1/ingest/batches", json=body).status_code == 401
+    response = client.post("/api/v1/ingest/batches", json=body, headers=auth)
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["status"] == "PARTIAL" and result["transaction"] == "COMMITTED"
+    assert [item["outcome"] for item in result["results"]] == ["ACCEPTED", "REJECTED"]
+    assert result["counts"] == {"received": 2, "accepted": 1, "duplicate": 0, "rejected": 1}
+    prior_value = one("SELECT value FROM telemetry_records WHERE asset_id=%s AND ts=%s",
+                      asset["asset_id"], datetime(2000, 1, 1, tzinfo=timezone.utc))["value"]
+    assert prior_value == 12.5
+    replay = client.post("/api/v1/ingest/batches", json=body, headers=auth)
+    assert replay.status_code == 200 and replay.headers.get("Idempotent-Replay") == "true"
+    assert replay.json() == result
+    duplicate_body = {**body, "batch_id": str(uuid.uuid4()), "records": [good]}
+    duplicate = client.post("/api/v1/ingest/batches", json=duplicate_body, headers=auth)
+    assert duplicate.status_code == 200 and duplicate.json()["results"][0]["outcome"] == "DUPLICATE"
+    reused = {**body, "records": [{**good, "value": 14.0}]}
+    assert client.post("/api/v1/ingest/batches", json=reused, headers=auth).status_code == 409
+    conflict_body = {**body, "batch_id": str(uuid.uuid4()), "records": [{**good, "value": 99.0}]}
+    conflict = client.post("/api/v1/ingest/batches", json=conflict_body, headers=auth)
+    assert conflict.status_code == 422 and conflict.json()["status"] == "REJECTED"
+    assert one("SELECT value FROM telemetry_records WHERE asset_id=%s AND ts=%s",
+               asset["asset_id"], datetime(2000, 1, 1, tzinfo=timezone.utc))["value"] == 12.5
+    audit = client.get(f"/api/v1/ingest/batches/{batch_id}", headers=auth)
+    assert audit.status_code == 200 and audit.json()["rejected"][0]["payload"] == bad
+    assert one("SELECT count(*) AS n FROM ingestion_rejections")["n"] == 2
+    stored_hash = one("""SELECT c.key_hash FROM source_credentials c JOIN data_sources s USING(source_id)
+                       WHERE s.source_code=%s""", source_code)["key_hash"].strip()
+    assert stored_hash == hashlib.sha256(token.encode()).hexdigest() and token not in stored_hash
+    DB.execute("""UPDATE source_credentials SET revoked_at=now() WHERE key_prefix=%s""", (token.split("_")[1],))
+    assert client.post("/api/v1/ingest/batches", json=body, headers=auth).status_code == 403
 
 
 @test("fresh database: no alerts and no incidents before detection (nothing pre-seeded, no demo fire)")
@@ -333,6 +401,20 @@ def _():
         assert client.get("/health").json() == {"status": "ok"}
     finally:
         os.environ["PGPORT"] = saved
+
+
+@test("legacy POST /events and POST /alerts remain available alongside v1 ingestion")
+def _():
+    asset = one("""SELECT a.asset_id FROM assets a JOIN system_types st USING(system_type_id)
+                   WHERE st.code='HVAC' ORDER BY a.asset_id LIMIT 1""")
+    ts = "2001-01-01T00:00:00Z"
+    event = client.post("/events", json={"asset_id": asset["asset_id"], "event_type": "hvac_fault",
+                                        "ts": ts, "severity": "INFO", "details": {"compat": True}})
+    assert event.status_code == 201, event.text
+    alert = client.post("/alerts", json={"rule_id": "HVAC_HIGH_TEMP", "asset_id": asset["asset_id"],
+                                        "severity": "WARNING", "summary": "legacy endpoint compatibility",
+                                        "first_ts": ts, "facts": {"compat": True}})
+    assert alert.status_code == 201, alert.text
 
 
 if __name__ == "__main__":

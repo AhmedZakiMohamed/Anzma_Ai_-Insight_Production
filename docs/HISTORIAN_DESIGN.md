@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Status** | Design and interface specification. **No historian is implemented**; Day 1 does not include implementation. |
-| **Baseline** | PostgreSQL 16 (`docker-compose.yml`, `db` service) with the runtime schema in `CORE_DATA_ARCHITECTURE.md` §4. |
+| **Status** | Historian design plus implemented ingestion foundation. Migration 006 adds provenance/quality fields and append-only state facts; freshness/gap tracking, retention, and rollups remain future work. |
+| **Baseline** | PostgreSQL 16; migration 006 is included for fresh volumes and can be applied additively to existing volumes with the documented runner. The shared database was not migrated. |
 | **Related** | `CANONICAL_DATA_MODEL.md` (entities/columns named here), `DATA_MIGRATION_PLAN.md`, `SPRINT_1_TECHNICAL_ISSUES.md` |
 
 Entities marked *(proposed)* are defined in `CANONICAL_DATA_MODEL.md`. SQL below is **illustrative query design**, not a migration; column names that do not exist today are marked *(proposed)*.
@@ -19,7 +19,7 @@ Entities marked *(proposed)* are defined in `CANONICAL_DATA_MODEL.md`. SQL below
 5. Be the single data source the existing intelligence reads through (KPI, alert engine, incident engine, evidence, AI, chat) without changing their behaviour.
 6. Stay on **PostgreSQL**; add nothing that a measured requirement does not justify.
 
-What exists today [Verified]: facts live in `telemetry_records` and `event_records` (append-by-convention, not enforced), with `UNIQUE` natural keys, `TIMESTAMPTZ` everywhere, and a data-relative clock (`v_data_clock`). There is **no ingestion path for telemetry**, no source/quality/received-time, no state history, no gap detection, no retention policy, and no backup configuration in the repository (none found; the DB uses a named Docker volume `pgdata`).
+What exists today [Verified]: `POST /api/v1/ingest/batches` writes telemetry, events, and append-only equipment state with source, observed/received time, quality, and batch provenance. `v_telemetry_valid` excludes `BAD` while retaining legacy `NULL` quality. Rejected records are audited separately. Freshness gap detection, retention jobs, rollups, and a repository backup runbook are not implemented. The existing legacy endpoints remain supported.
 
 ---
 
@@ -245,7 +245,7 @@ Compatibility note: today’s `no_data` health status (KPI) and `heartbeat_compl
 | Dead-letter handling | `ingestion_rejections` (reason + payload) is the minimal dead-letter store, with a replay tool that re-submits fixed records | A broker DLQ — **not justified** at this scale |
 | Back-pressure | HTTP 429/503 with `Retry-After` when the DB is unavailable (`db_adapter.DatabaseUnavailable` already maps to 503) | Queue |
 
-Design requirement: ingestion must never block the intelligence loop; the detection loop (`App.py _alert_loop`) must tolerate ingestion load (separate connections; statement timeouts as in `chat_lite._run_readonly_sql`).
+Design requirement: ingestion must never block the intelligence loop; the detection loop (`app/main.py::_alert_loop`) must tolerate ingestion load (separate connections; statement timeouts as in `app/api/chat_lite.py`).
 
 ---
 

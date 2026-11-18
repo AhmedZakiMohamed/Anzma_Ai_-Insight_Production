@@ -1,10 +1,10 @@
 # CONTRACT_TO_DB_MAPPING.md — Anzma AI Insight Core
 
-**Status:** Proposal. **No migration is written and no database object is changed by this document.**
+**Status:** Reconciled with implemented additive migration `006_ingestion_foundation.sql`; the shared existing database has not been migrated. This document itself makes no database changes.
 **Purpose:** show how every field of [`INGESTION_CONTRACT.md`](INGESTION_CONTRACT.md) lands in the **existing** PostgreSQL schema, and list the minimum that must be added. Rule followed: **no parallel data model, no duplicated data** without a stated reason.
 **Basis [Verified]:** `db/init/anzma_schema_and_seed.sql`, `db/migrations/003`–`005`, `app/main.py`, `app/api/*`, `app/repositories/dashboard_core_pg.py` in `Anzma_Ai_Insight_Production`.
 
-Tags: **[Verified]** read in the repository, **[Proposed]**, **[Open]**.
+Tags: **[Verified]** read in the repository, **[Implemented]** present in migration/code, **[Proposed]** future only.
 
 ---
 
@@ -133,94 +133,36 @@ Deliberately **not added now** (in `CANONICAL_DATA_MODEL.md` but not needed by t
 
 ---
 
-## 5. Constraint change that needs a decision
+## 5. Implemented identity and uniqueness constraints
 
-Today `event_records` has `UNIQUE (asset_id, event_type_id, ts)`. If it stays, two **distinct** connector events on the same asset, of the same type, at the same instant, collapse into one (ISS-007), and a no-target `ON CONFLICT DO NOTHING` would misreport the second as a duplicate.
+Migration 006 leaves the legacy event natural key `(asset_id, event_type_id, ts)` intact and adds a partial unique index on `(source_id, source_event_id)` for non-NULL source IDs. Telemetry keeps `UNIQUE (asset_id, metric_id, ts)`. Batch identity is `UNIQUE (source_id, batch_id)`; the payload hash detects reuse of a batch ID with changed content. The service compares conflicting natural-key records and never updates an accepted fact.
 
-**[Proposed]**
+`asset_external_ids` has primary key `(source_id, external_id)`. A database trigger verifies each mapped asset belongs to the source's building. A source cannot remap an existing external ID to another asset; provisioning reports a conflict and makes no update.
 
-1. Add `UNIQUE (source_id, source_event_id) WHERE source_event_id IS NOT NULL`.
-2. Replace the legacy constraint with a **partial** unique index `(asset_id, event_type_id, ts) WHERE source_event_id IS NULL`, so legacy rows keep today's protection.
+## 6. Implemented ingestion and security tables
 
-**Consequence [Verified]:** `POST /events` in `app/main.py` uses `ON CONFLICT (asset_id, event_type_id, ts) DO NOTHING`. With a partial index, PostgreSQL requires the index predicate in that clause (`… WHERE source_event_id IS NULL`), so the statement must change. Tests that insert events (`tests/…`, `e2e_s1.py`) must be checked for the same pattern.
-
-`telemetry_records` keeps `UNIQUE (asset_id, metric_id, ts)` unchanged.
-
----
-
-## 6. New tables
-
-| Table | Purpose | Key columns |
+| Table | Purpose | Key columns / invariant |
 |---|---|---|
-| `data_sources` | Registry of sources | `source_id`, `source_code UNIQUE`, `building_id` FK (NULL allowed only for types `CORE`, `SIMULATOR`), `source_type` (`CONNECTOR/SIMULATOR/MANUAL/API/CORE`), `connector_name`, `connector_version`, `status` (`ACTIVE/DEGRADED/ERROR/DISABLED`), `keepalive_interval_s` (300), `delay_threshold_s` (900), `max_backdate_days` (90), `last_received_at`, `last_success_at`, `last_error_at`, `last_error`, `source_metadata` |
-| `source_credentials` | API keys (D5) | `credential_id`, `source_id` FK, `key_prefix UNIQUE`, `key_hash`, `scopes TEXT[]`, `status` (`ACTIVE/REVOKED`), `expires_at`, `created_at`, `last_used_at` |
-| `asset_external_ids` | Vendor ID → asset | PK `(source_id, external_id)`, `asset_id` FK, index `(asset_id)` |
-| `ingestion_batches` | Batch audit and replay | `ingestion_batch_id`, `source_id`, `client_batch_id UUID`, `UNIQUE (source_id, client_batch_id)`, `payload_sha256`, `contract_version`, `delivery_mode`, `sent_at`, `received_at`, `status` (`ACCEPTED/PARTIAL/REJECTED`), `received/accepted/duplicate/rejected_count`, `connector_status JSONB`, `result JSONB` |
-| `ingestion_rejections` | Minimal dead-letter, audit | `rejection_id`, `ingestion_batch_id` FK, `source_id`, `record_index`, `record_type`, `external_id`, `reason_code`, `message`, `payload JSONB` (truncated to 8 KiB), `created_at`; index `(source_id, reason_code, created_at)` |
-| view `v_unmapped_external_assets` | What to map next | from `ingestion_rejections` where `reason_code = 'ASSET_UNRESOLVED'`: `source_id`, `external_id`, `count`, `first_seen`, `last_seen` |
+| `data_sources` | Registered source/building/connector | `source_code UNIQUE`, required `building_id`, connector identity and status |
+| `source_credentials` | Per-source bearer credentials | key prefix lookup; SHA-256 hash only; scopes, expiry, revocation and last-use timestamps |
+| `asset_external_ids` | Source-local external asset identity | PK `(source_id, external_id)`; trigger enforces source/building match |
+| `ingestion_batches` | Batch result and exact retry record | unique source + UUID; canonical JSON SHA-256; per-record counts and response |
+| `ingestion_rejections` | Durable rejected-record audit | batch/index unique; reason and payload; excluded from operational facts |
+| `equipment_state_records` | Append-only reported equipment state | unique source + asset + observed time; accepted state only |
 
-Seed rows: `legacy-seed` (type `SIMULATOR`, all existing facts), `legacy-api` (type `API`, rows written by `POST /events`), `core-engine` (type `CORE`).
+Provisioning uses `scripts/ingestion_admin.py`; it prints a newly issued key once. Rotation issues an additional active key and revocation is explicit. No API key is stored in batch payloads or rejection details.
 
-**Why each is not a duplicate:** nothing in the current schema records provenance, identity mapping, batch results or rejected input. `scenario_runs` is a simulation harness and is unrelated to batches.
+## 7. Implemented API mapping
 
-**Retention [Open]:** `ingestion_rejections` can grow quickly if a connector misbehaves; propose 90 days and a per-source cap. Also **[Open]** whether `ingestion_batches.result` is kept past a shorter window.
+The v1 contract is implemented at `POST /api/v1/ingest/batches` and `GET /api/v1/ingest/batches/{batch_id}`. Existing `POST /events` and `POST /alerts` are unchanged. The full envelope, record schemas, HTTP statuses, response meanings, and retry rules are in `INGESTION_CONTRACT.md`.
 
-### Deferred tables (freshness/state phase)
+Accepted measurements/events/state rows, the batch result, and rejection audit commit in one transaction. `200 PARTIAL` means those outcomes were committed. `422 REJECTED` means the rejection result was committed and is auditable. Database failure rolls the transaction back and returns retryable `503`. Exact same-body retry with the same `(source_id, batch_id)` replays the stored response; changed body with that key returns `409 BATCH_ID_REUSED`.
 
-| Table | Why deferred |
-|---|---|
-| `reporting_expectations` | Needed to **compute** freshness, not to **accept** data. Defaults (900 s telemetry, 3600 s heartbeat) are enough to begin. |
-| `data_gaps` | Written by the freshness job. `SOURCE_DECLARED_MISSING` is removed (D1). |
-| `asset_state_current`, `asset_state_history` | Core-derived (D2). |
+## 8. Implemented additive migration and rollout
 
----
+`db/migrations/006_ingestion_foundation.sql` adds the schema without backfilling or updating historical fact rows. New provenance/quality columns remain NULL on old facts. `v_telemetry_valid` excludes `quality='BAD'` and keeps legacy NULL quality. Existing operational readers were switched to this view; evidence still reads the original telemetry table and record IDs.
 
-## 7. APIs
-
-### 7.1 Existing
-
-| Endpoint | Decision |
-|---|---|
-| `GET /health`, `GET /ready` | Reuse. Optionally report ingestion/database readiness. |
-| `GET /dashboard/overview`, `/trends`, `/equipment-health` | **Reuse; no response change.** Underlying queries exclude `quality = 'BAD'`. |
-| `GET /alerts`, `GET /alerts/{id}`, `POST /alerts`, `POST /alerts/run`, `POST /alerts/{id}/explain` | Reuse unchanged. Alert detection reads telemetry through the same exclusion. |
-| `GET /incidents`, `/incidents/{id}`, `/incidents/{id}/evidence`, `POST /incidents/{id}/status` | Reuse unchanged. |
-| `POST /chat`, `GET /chat/questions`, `POST /ask` | Reuse unchanged. Chat views (`004_chat_views.sql`) must apply the same exclusion. |
-| `POST /events` | **Keep as legacy.** One change: the `ON CONFLICT` target (§5). Stamp rows with source `legacy-api`. Not for connectors (internal `asset_id`, no provenance). |
-| Socket.IO `new_alert` | Unchanged. |
-
-**Quality exclusion — scope.** [Verified] about 30 lines reference `telemetry_records` across 9 application files, plus `db/migrations/004_chat_views.sql`. **[Proposed]** introduce one view (for example `v_telemetry_valid`: `quality <> 'BAD'`) and point readers at it, rather than repeating the predicate 30 times. `UNCERTAIN` stays included; alert evidence marks it.
-
-### 7.2 New
-
-| Priority | Endpoint | Purpose |
-|---|---|---|
-| **P0** | `POST /api/v1/ingest/batches` | Ingestion (contract §2–§12) |
-| **P0** | `GET /api/v1/ingest/batches/{batch_id}` | Stored result and full rejection list |
-| P1 | Source registration, credential create/revoke, asset-mapping create/list, `GET …/unmapped` | Administration. **[Open C5]** The Core has no admin authentication today, so the first version may be a CLI or SQL script rather than an HTTP API. |
-| P2 | Source health and freshness read (or extend `/dashboard/equipment-health`) | Needs the freshness job. |
-
-Path prefix `/api/v1` is **[Open]** (platform owner).
-
----
-
-## 8. Proposed migration `006_ingestion_foundation.sql` (outline only)
-
-Numbering follows the existing sequence (`003`, `004`, `005`). Each step idempotent, like `005`.
-
-1. Create `data_sources`; seed `legacy-seed`, `legacy-api`, `core-engine`.
-2. Add `buildings.building_code`; backfill from administrator-supplied codes; then `UNIQUE NOT NULL`.
-3. Add nullable columns to `telemetry_records` and `event_records` (`quality` with default).
-4. Backfill `source_id` (`legacy-seed`); set `NOT NULL`; leave `received_at` NULL.
-5. Create `ingestion_batches`, `ingestion_rejections`, `asset_external_ids`, `source_credentials`; add FKs from the fact tables.
-6. Event uniqueness change (§5): create the new partial unique index, then swap the legacy constraint.
-7. Insert `equipment_state_report` into `event_types` and its compatibility rows.
-8. Create `v_telemetry_valid` and `v_unmapped_external_assets`.
-9. Extend `scripts/verify_schema.sql` with checks for each new object and for orphan/compatibility rules.
-
-**Regression protection:** existing KPI, alert, incident, evidence and chat tests (`test_data_integrity.py`, `test_frontend_api.py`, `test_day2_integration.py`, `test_chat_consistency.py`, `e2e_s1.py`) must pass unchanged on a migrated database. Legacy rows keep `quality = 'GOOD'`, so current results must not move.
-
----
+`deploy/compose/docker-compose.yml` applies 006 only when initializing an empty volume. Existing databases use `scripts/apply_migrations.py`, which applies unapplied 006+ migrations under a PostgreSQL advisory lock and records versions in `schema_migrations`. The exact operator procedure and compatible rollback are documented in `DATA_MIGRATION_PLAN.md`. Migration 006 has not been run against the shared existing database.
 
 ## 9. Risks and open points
 

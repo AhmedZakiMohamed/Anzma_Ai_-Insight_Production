@@ -47,7 +47,8 @@ def build(db):
         for f in (os.path.join(ROOT, "db", "init", "anzma_schema_and_seed.sql"),
                   os.path.join(ROOT, "db", "migrations", "003_incidents.sql"),
                   os.path.join(ROOT, "db", "migrations", "004_chat_views.sql"),
-                  os.path.join(ROOT, "db", "migrations", "005_alert_uniqueness.sql")):   # store_alerts needs 005
+                  os.path.join(ROOT, "db", "migrations", "005_alert_uniqueness.sql"),
+                  os.path.join(ROOT, "db", "migrations", "006_ingestion_foundation.sql")):   # runtime schema sequence
             c.execute(open(f, encoding="utf-8").read())
             conn.commit()
     return conn

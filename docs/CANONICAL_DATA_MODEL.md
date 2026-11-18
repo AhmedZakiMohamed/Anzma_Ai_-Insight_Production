@@ -2,12 +2,21 @@
 
 | | |
 |---|---|
-| **Status** | **Proposed specification.** Nothing here is implemented unless marked **[Existing]**. |
-| **Baseline** | The 13-table runtime schema and 5 views in `db/init/anzma_schema_and_seed.sql` plus `db/migrations/003_incidents.sql`, `004_chat_views.sql`, and `005_alert_uniqueness.sql`; see `DATABASE_BASELINE.md`. |
+| **Status** | Canonical model and implementation reference. Migration 006 implements the approved ingestion foundation; optional structures below remain proposals. |
+| **Baseline** | Historical deployed baseline: 13 tables and 5 views through migration 005. Repository target adds migration 006 for ingestion; see `DATABASE_BASELINE.md` and `DATA_MIGRATION_PLAN.md`. |
 | **Related** | `CORE_DATA_ARCHITECTURE.md`, `HISTORIAN_DESIGN.md`, `DATA_MIGRATION_PLAN.md`, `SPRINT_1_TECHNICAL_ISSUES.md` |
 
-Notation: **[Existing]** table/column exists today · **[NEW column]** added to an existing table · **[NEW entity]** new table · **[View]** proposed view · **[Open]** needs a decision.
+Notation: **[Existing]** present before migration 006 · **[Implemented]** added by 006/code · **[NEW]** future proposal · **[Open]** requires a separate decision.
 No DDL here is a migration; the column lists are specifications for review.
+
+## Implementation status (18 November 2026)
+
+- **Implemented and runtime-verified:** multiple buildings, locations, system types and assets are represented by `buildings`, `locations`, `system_types`, and `assets`; assets reference a system and location, and locations reference a building. PostgreSQL also contains historical `telemetry_records`, `event_records`, alerts, and incidents. Telemetry/event rows do not carry explicit building IDs; building is derived through the asset/location relationship.
+- **Implemented and test-verified:** alert rules and anomaly detection, incident grouping/lifecycle, evidence re-reading and grounding checks, recommendations, chat/dashboard routes, and the Day 3 bandwidth percentage correction. The current checkout's offline unit suite passed 25/25; see `PRODUCTIZATION_IMPLEMENTATION_REPORT.md` for the bounded verification record.
+- **Implemented (migration 006 + code):** `/api/v1/ingest/batches`, source registry and hashed credentials, source-scoped asset IDs, nullable provenance/quality columns, batch/rejection audit, append-only equipment-state facts, and valid telemetry view. Existing facts were not backfilled; operational readers exclude quality `BAD` while retaining legacy `NULL` quality.
+- **Not implemented:** freshness/gap tracking, retention policy, rollups, organization hierarchy, and migration 006 application to the shared runtime database.
+- **Known limitation:** the existing seed is synthetic. The current multi-building schema is a structural capability, not proof that every API, chat query, or dashboard path enforces building-level isolation.
+- **Approved and implemented for contract v1 (18 November 2026):** `/api/v1/ingest/batches`; per-record outcomes committed in one batch transaction; external IDs unique per source and mapped only to assets in that source's building; per-source bearer API keys stored as hashes with revocation/rotation; first-write-wins for telemetry conflicts, with rejected payloads retained separately.
 
 ---
 
@@ -279,8 +288,7 @@ Evidence remains traceable to actual data: AI text is only ever checked **agains
 | `last_success_at`, `last_error_at`, `last_error` | Updated by ingestion |
 | `source_metadata` JSONB | Opaque |
 
-Seed rows to create during migration: `legacy-seed` (type `SIMULATOR`, for all existing facts) and `core-engine` (type `CORE`).
-`ingestion_batches` and `ingestion_rejections` [NEW entities] record per-batch counts (`accepted/duplicate/rejected`, `client_batch_id` for retry idempotency) and rejected payloads (`reason_code`, `payload`), giving an audit trail without a message broker.
+Migration 006 implements `data_sources`, `source_credentials`, source-scoped `asset_external_ids`, `ingestion_batches`, `ingestion_rejections`, and `equipment_state_records`. It does not seed legacy/core sources or backfill existing fact provenance; existing rows remain without a source until separately provisioned.
 
 ---
 
@@ -291,7 +299,7 @@ Seed rows to create during migration: `legacy-seed` (type `SIMULATOR`, for all e
 | `GOOD` | Valid, plausible, trusted | `telemetry_records.quality` | KPI, alerts, charts |
 | `UNCERTAIN` | Valid but source flagged low confidence (e.g. sensor warming up, substituted value) | `quality` | KPI/alerts **include** by default but the evidence marks it; configurable |
 | `BAD` | Structurally valid but unusable (outside plausible range, connector-declared bad) | `quality` | Kept for audit; **excluded** from KPI/alerts via a compatibility view |
-| `MISSING` | No value was obtained for an expected observation | **Not a telemetry row** (`value` stays NOT NULL). Contract may carry `quality: MISSING` (no `value`) → recorded in `data_gaps` with `cause='SOURCE_DECLARED_MISSING'` | freshness, gap reports |
+| `MISSING` | No value was obtained for an expected observation | Not accepted as telemetry quality in v1; no `data_gaps` table is implemented | future freshness/gap reports |
 
 How other conditions are represented:
 
@@ -300,11 +308,11 @@ How other conditions are represented:
 | **Invalid** (schema, unknown asset/metric/unit, bad timestamp, non-finite value) | Rejected; row in `ingestion_rejections`; never in the Historian |
 | **Implausible** (outside `min/max_plausible`) | Stored `BAD` |
 | **Stale** | Derived `freshness=STALE` (not a property of a measurement) |
-| **Missing** | Absence + `data_gaps` row; `freshness=MISSING` |
+| **Missing** | Absence; explicit gap tracking is future work |
 | **Delayed** | `received_at − ts > source delay threshold`; derived `is_late`; late rows can still be evaluated by the idempotent detection run |
 | **Duplicate** | No-op, counted in `ingestion_batches.duplicate_count` |
 
-Existing rows get `quality='GOOD'` so current KPI/alert results are unchanged.
+Existing rows retain `quality=NULL` because their historical quality is unknown. `v_telemetry_valid` includes NULL and excludes only `BAD`, preserving legacy readings in operational calculations.
 
 ---
 
@@ -462,9 +470,9 @@ Vendor B raw (illustrative): `{"deviceId":"B-77/ai3","value":24.6,"unit":"Celsiu
 
 ## 17. Versioning and compatibility strategy
 
-- **Contract version** `MAJOR.MINOR` in every envelope and stored per row (`contract_version`). MINOR = additive optional fields; MAJOR = breaking. The Core accepts the current and previous MAJOR during a published deprecation window (length **[Open]**).
+- **Contract version** `MAJOR.MINOR` in every envelope and stored per row (`contract_version`). This implementation accepts `1.0`; future compatibility/deprecation windows require a versioned contract change.
 - **Unknown fields:** ignored with a warning in the response; only `source_metadata`/`details` content is persisted opaque. Unknown enum values → reject.
-- **Schema evolution** is by numbered migration files after `004` (proposed `005…`), tracked in a `schema_migrations` table (F-20); init scripts remain loadable for fresh databases (`day2_ahmed/test_day2_integration.py` rebuilds from schema file + `003`).
-- **Backward compatibility rules:** existing tables/columns are never renamed or dropped in Sprint 1; compatibility views (`v_telemetry_canonical`, `v_event_canonical`, and building-aware versions of the `v_*` chat views) expose old column names and semantics; legacy rows keep `source='legacy-seed'`, `quality='GOOD'`, `received_at=NULL`.
-- **API compatibility:** existing endpoints and response shapes (`/dashboard/*`, `/alerts`, `/incidents`, `/chat`, `/ask`, `POST /events`, `POST /alerts`) are unchanged; ingestion is a new route (name **[Open]**; not `/api/v1` unless Amr confirms the platform convention).
+- **Schema evolution:** migrations `003_incidents.sql` through `006_ingestion_foundation.sql` exist. Migration 006 adds `schema_migrations`; `scripts/apply_migrations.py` applies 006+ to existing databases under an advisory lock. Compose init mounts still apply only to empty database volumes.
+- **Backward compatibility rules:** migration 006 is additive; existing endpoints and response shapes (`/dashboard/*`, `/alerts`, `/incidents`, `/chat`, `/ask`, `POST /events`, `POST /alerts`) remain supported. Legacy facts retain NULL source/quality/received metadata.
+- **API compatibility:** the versioned route is `POST /api/v1/ingest/batches`; batch result retrieval is `GET /api/v1/ingest/batches/{batch_id}`.
 - **Terminology for UI vs DB** stays a translation layer (AD-04).

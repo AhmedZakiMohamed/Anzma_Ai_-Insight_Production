@@ -222,7 +222,7 @@ def _cctv(conn, lang, hours, p, last):
             SELECT a.asset_id, a.name FROM assets a
             JOIN system_types st ON st.system_type_id = a.system_type_id WHERE st.code = 'CCTV'),
         rep AS (
-            SELECT asset_id FROM telemetry_records WHERE ts >= %(start)s AND ts < %(end)s
+            SELECT asset_id FROM v_telemetry_valid WHERE ts >= %(start)s AND ts < %(end)s
             UNION
             SELECT er.asset_id FROM event_records er JOIN event_types et ON et.event_type_id = er.event_type_id
             WHERE et.name = 'heartbeat' AND er.ts >= %(start)s AND er.ts < %(end)s),
@@ -334,7 +334,7 @@ def _energy(conn, lang, hours, p, last):
                count(*)      FILTER (WHERE tr.ts >= %(start)s AND tr.ts < %(end)s) AS cur_n,
                avg(tr.value) FILTER (WHERE tr.ts >= %(pstart)s AND tr.ts < %(start)s) AS prev_avg,
                count(*)      FILTER (WHERE tr.ts >= %(pstart)s AND tr.ts < %(start)s) AS prev_n
-        FROM telemetry_records tr JOIN metric_types m ON m.metric_id = tr.metric_id
+        FROM v_telemetry_valid tr JOIN metric_types m ON m.metric_id = tr.metric_id
         WHERE m.name = 'power_kw' AND tr.ts >= %(pstart)s AND tr.ts < %(end)s""",
                      {"start": p[0], "end": p[1], "pstart": pstart}).fetchone()
     src = {"ref": "Q1", "text": f"SELECT avg(value) FROM telemetry_records WHERE metric = power_kw -> current window "

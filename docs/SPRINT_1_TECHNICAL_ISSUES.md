@@ -1,9 +1,9 @@
 # SPRINT_1_TECHNICAL_ISSUES.md — Anzma AI Insight Core
 
-Prioritised technical issues and dependencies derived from the Day 1 review (`CORE_DATA_ARCHITECTURE.md` findings **F-xx**).
+Prioritised technical issues and dependencies derived from the Day 1 review (`CORE_DATA_ARCHITECTURE.md` findings **F-xx**), reconciled with repository/runtime inspection on 18 November 2026.
 No deadlines, estimates or assignees are given: none are supported by evidence in the repository.
 
-> **Historical snapshot:** this issue list reflects the Day 1 review. For the current schema and migration status, use [DATABASE_BASELINE.md](DATABASE_BASELINE.md); statements below about missing constraints or migration mounts may have been superseded.
+> **Current scope note (18 November 2026):** migration 006, the advisory-locked migration runner, per-source hashed credentials, source-scoped mapping, batch API, rejection audit, and quality-aware readers are implemented and tested in an isolated PostgreSQL project. The shared running database remains at its pre-006 schema. Older issue descriptions below are historical unless their status explicitly says current; use `INGESTION_CONTRACT.md` and `DATA_MIGRATION_PLAN.md` for the approved implementation.
 
 | Priority | Meaning |
 |---|---|
@@ -13,7 +13,7 @@ No deadlines, estimates or assignees are given: none are supported by evidence i
 | **P3** | Future enhancement |
 
 “Phase” refers to migration phases **M0–M6** (`DATA_MIGRATION_PLAN.md` §6) and historian phases **H0–H6** (`HISTORIAN_DESIGN.md` §15).
-All code evidence below was read in the uploaded archive; none of it was executed.
+Code references below originated in the uploaded archive. Current implementation status must be read with the scope note and linked architecture baseline; historical test results remain historical. The current offline unit baseline passed 25/25.
 
 ---
 
@@ -72,18 +72,17 @@ flowchart TD
 ## 1. P0 — Critical reliability / data integrity
 
 ### ISS-001 — Alert de-duplication has no database constraint
-- **Priority:** P0 · **Phase:** M3 / H5
-- **Situation / evidence:** `day2_ahmed/db_adapter.py::store_alerts` inserts with `WHERE NOT EXISTS (rule_id, asset_id, first_ts)`; `alerts` has no `UNIQUE` on those columns (`db/init/anzma_schema_and_seed.sql`). Three writers can run concurrently: the in-process loop `App.py::_alert_loop` (every `DETECT_INTERVAL`=60 s), `POST /alerts/run`, and `POST /alerts`. A second uvicorn worker would start a second loop (`App.py::_startup`). Duplicates would create duplicate incidents (`incident_engine.assign_incidents`).
+- **Priority:** P0 · **Status:** Database uniqueness implemented in migration 005; concurrent detection/incident assignment still needs a focused test. · **Phase:** M3 / H5
+- **Situation / evidence:** `app/adapters/database/db_adapter.py::store_alerts` and `db/migrations/005_alert_uniqueness.sql` protect `(rule_id, asset_id, first_ts)` with a database UNIQUE index. The in-process loop in `app/main.py`, `POST /alerts/run`, and `POST /alerts` remain multiple writers; no concurrent-run lock was verified.
 - **Action:** pre-check for existing duplicates (never delete silently); add `UNIQUE (rule_id, asset_id, first_ts)`; change insert to `ON CONFLICT DO NOTHING`; guard the detection loop with `pg_advisory_lock`.
 - **Depends on:** ISS-002 (runner), ISS-013 (baseline).
 - **Acceptance:** two concurrent `pipeline.detect()` runs produce no duplicate `(rule_id, asset_id, first_ts)`; `test_day2_integration.py` still 43/43; golden snapshot unchanged; duplicate pre-check query returns 0 rows or each duplicate has a documented resolution.
 
-### ISS-002 — No migration runner or schema versioning; local migration is untracked
-- **Priority:** P0 · **Phase:** M1 (prerequisite)
-- **Situation / evidence:** `docker-compose.yml` mounts schema, `003`, `004` into `docker-entrypoint-initdb.d`, which runs only on an empty volume. No `schema_migrations` table or runner found. `004_chat_views.sql` is untracked and the compose line that mounts it is staged-only (`git status --short`). Two identical copies of the schema file exist (`db/init/…`, `day2_ahmed/…`; byte-identical).
-- **Action:** specify and add a numbered, idempotent migration runner recording applied files in `schema_migrations` (advisory-locked); agree with the owner of the local changes that `004` and the compose change are committed together; choose one canonical location for the schema file. (Docker/compose edits are Amr’s decision; this assignment made none.)
-- **Depends on:** coordination with the owner of the staged/untracked files; Amr (deployment).
-- **Acceptance:** an existing database at the current state upgrades to the next migration without data loss; a fresh clone builds a database with the same schema as an upgraded one (schema diff empty); applied migrations are listed in `schema_migrations`.
+### ISS-002 — No migration runner or schema versioning
+- **Priority:** P0 · **Status:** Migration 006 and runner implemented; shared DB not yet migrated. · **Phase:** M1
+- **Situation / evidence:** migration 006 adds `schema_migrations`; `scripts/apply_migrations.py` applies unapplied 006+ files under an advisory lock. Fresh Compose initialization mounts migration 006.
+- **Action:** operator reviews backup/target and runs the documented migration command when deploying. Init mounts do not upgrade an existing volume.
+- **Acceptance:** **Code/schema acceptance passed in isolated DB** (20 tables, 7 views; migration applied twice); shared DB upgrade remains a deployment action.
 
 ### ISS-003 — Bandwidth unit mismatch silently disables alert rules
 - **Priority:** P0 · **Status:** code/documentation updated; regression verification passed on the current change.
@@ -98,30 +97,27 @@ flowchart TD
 ## 2. P1 — Initial productization foundation
 
 ### ISS-004 — No ingestion path for the canonical contract (telemetry cannot be received)
-- **Priority:** P1 (blocker) · **Phase:** M4 / H2
-- **Situation / evidence:** `App.py` exposes only `POST /events` (single event) and `POST /alerts`. `README.md` states the `/api/v1` batch ingestion described in `docs/API_CONTRACT.md` is **not implemented**. A search for `INSERT INTO telemetry_records` finds only the seed and `test_frontend_api.py`. The schema comment “1..5000 atomic batch rule enforced in ingestion code” has no matching code.
-- **Action:** implement the canonical contract endpoint (telemetry, state, event) per `CANONICAL_DATA_MODEL.md` §16 and `HISTORIAN_DESIGN.md` §3: validation, identity resolution, compatibility, unit/timestamp checks, idempotent persistence, `ingestion_batches`, `ingestion_rejections`; behind a flag; keep `POST /events` working.
-- **Depends on:** ISS-002, 005, 006, 007, 015, 001; decisions Q4, Q9, Q1.
-- **Acceptance:** contract test matrix (valid, each rejection reason, replay, duplicate, conflict, late, future >5 min) passes; the two-vendor temperature example (`CANONICAL_DATA_MODEL.md` §16.2) yields identical canonical rows apart from asset/source; no change in golden snapshot.
+- **Priority:** P1 · **Status:** Implemented and API tested in an isolated database. · **Phase:** M4
+- **Situation / evidence:** `POST /api/v1/ingest/batches` accepts canonical telemetry/event/state records. The legacy `POST /events` and `POST /alerts` remain supported.
+- **Action:** no further architecture is authorized here. Expand contract coverage only within the approved v1 semantics; deploy migration 006 separately after operator review.
+- **Verification:** partial outcomes, exact batch replay, changed-payload rejection, immutable telemetry conflict, rejection retrieval, and auth were exercised. Full frontend suite has one pre-existing CRAC dashboard expectation mismatch (recorded in the implementation report).
 
 ### ISS-005 — Building (and organization) identity missing on operational records
-- **Priority:** P1 (blocker) · **Phase:** M1–M3
-- **Situation / evidence:** `telemetry_records`, `event_records`, `alerts`, `incidents` have no `building_id`; `frontend_api` passes `"building": None`; only `/dashboard/summary` filters by building (`dashboard_core_pg.SCOPE_CTE`); `db_adapter.load_context` loads all assets; no organization table.
-- **Action:** add `organizations`, `buildings.organization_id/building_code`, `assets.building_id`, and `building_id` on facts/alerts/incidents with composite FKs (`CANONICAL_DATA_MODEL.md` §4, §15); backfill; extend repository/views and dashboard/alert/incident endpoints with an optional building filter.
-- **Depends on:** ISS-002; decisions Q3, Q5.
-- **Acceptance:** zero rows whose `building_id` differs from the building derived via `assets → locations`; each endpoint accepts `building_id` and, with a value, returns only that building’s records; with no value results equal the baseline.
+- **Priority:** P1 · **Status:** Approved source/building scoping implemented; broader organization/building isolation remains future scope. · **Phase:** M1
+- **Situation / evidence:** migration 006 adds unique nullable-safe `buildings.building_code`; each source is tied to exactly one existing building, and mappings must target assets in that building. Facts still derive building through `assets → locations`; organization and general API tenant scoping were not approved here.
+- **Action:** retain the approved source-scoped boundary; any organization schema or broad dashboard isolation requires a separate decision.
+- **Acceptance:** SQL trigger enforces same-building map targets; ingestion API test resolves assets within authenticated source/building context.
 
 ### ISS-006 — Facts lack provenance, observed-vs-received time, and quality
-- **Priority:** P1 (blocker) · **Phase:** M1–M3
-- **Situation / evidence:** `telemetry_records(telemetry_id, asset_id, metric_id, ts, value)`, `event_records(…, ts, severity, details)`; no source/received/quality columns.
-- **Action:** add `data_sources`, `source_id`, `batch_id`, `received_at`, `quality`, `contract_version`, `source_metadata` (nullable first); legacy rows → `legacy-seed`, `quality='GOOD'`, `received_at` NULL; set defaults only after backfill (avoid stamping legacy rows with migration time).
-- **Depends on:** ISS-002.
-- **Acceptance:** all rows have a `source_id`; `received_at IS NULL` only for legacy rows; content hash of immutable columns unchanged; `v_telemetry_valid` returns the same rows as the base table on current data.
+- **Priority:** P1 · **Status:** Additive nullable provenance/quality implemented; old rows remain NULL without backfill. · **Phase:** M1
+- **Situation / evidence:** migration 006 adds source, receive time, quality, batch, contract and source metadata fields without changing historical facts.
+- **Action:** preserve NULL legacy values; provision source/building mapping only for new connectors.
+- **Acceptance:** isolated integrity test confirms existing facts remain and the new columns stay NULL; `v_telemetry_valid` excludes BAD and retains legacy NULL quality.
 
 ### ISS-007 — Event uniqueness can collapse distinct events
-- **Priority:** P1 (blocker) · **Phase:** M3 / H2
-- **Situation / evidence:** `event_records UNIQUE (asset_id, event_type_id, ts)`; `POST /events` returns 409 on conflict (`App.py::create_event`).
-- **Action:** add `source_event_id` and partial `UNIQUE (source_id, source_event_id)`; keep the legacy key for legacy rows.
+- **Priority:** P1 · **Status:** Source event IDs and scoped uniqueness implemented; legacy natural key retained. · **Phase:** M1
+- **Situation / evidence:** `event_records UNIQUE (asset_id, event_type_id, ts)`; `POST /events` returns 409 on conflict (`app/main.py::create_event`).
+- **Action:** migration 006 adds nullable `source_event_id` and a partial unique index; the service treats same-key/same-content as a duplicate and rejects conflicting reuse.
 - **Depends on:** ISS-006.
 - **Acceptance:** two events of the same type on one asset in the same second with different `source_event_id` are both stored; replaying one is a duplicate no-op.
 
@@ -134,7 +130,7 @@ flowchart TD
 
 ### ISS-015 — No authentication on API, database port or Socket.IO
 - **Priority:** P1 (blocker before real connectors) · **Phase:** before M4 goes live
-- **Situation / evidence:** `README.md` limitation “No authentication”; `docker-compose.yml` publishes 5432, 8000, 11434; `App.py` Socket.IO `cors_allowed_origins="*"`.
+- **Situation / evidence:** `README.md` limitation “No authentication”; `deploy/compose/docker-compose.yml` publishes database/API/model ports; `app/main.py` Socket.IO currently allows all origins.
 - **Action:** decide approach (Q9); authenticate connector requests and bind `source_code` to the credential; restrict CORS and DB exposure.
 - **Depends on:** Q9; Amr (deployment).
 - **Acceptance:** an unauthenticated ingestion request is rejected; a source cannot write for another source’s `source_code`; no secret appears in repository or docs.
@@ -162,7 +158,7 @@ flowchart TD
 
 ### ISS-011 — Chat SQL tool is unscoped and guarded by a string blocklist
 - **Priority:** P1 · **Phase:** before multi-customer use
-- **Situation / evidence:** `app/chat_lite.py::_safe_sql`, `_run_readonly_sql` (staged local file — **do not modify without its owner**): blocklist of tokens, `SET TRANSACTION READ ONLY`, 5 s timeout, `LIMIT 200`, executed on the application connection (`App.day2_connect`, user from env; compose default `postgres`). No building scope.
+- **Situation / evidence:** `app/api/chat_lite.py::_safe_sql`, `_run_readonly_sql`: blocklist, read-only transaction, timeout and row limit; execution uses the application DB connection. The free-form tool is not building-scoped.
 - **Action:** dedicated read-only DB role limited to `v_*` views; building-scoped views; decide whether the free-form tool remains (Q7); coordinate with the owner of the local changes.
 - **Depends on:** ISS-005; Q3, Q7.
 - **Acceptance:** the chat role cannot read base tables or write; a query under building A cannot return building B rows; `test_chat_consistency.py` still 31/31.
@@ -176,7 +172,7 @@ flowchart TD
 
 ### ISS-014 — Competing model documents obscure the authoritative model
 - **Priority:** P1 · **Phase:** documentation (no code)
-- **Situation / evidence:** `DATA_MODEL.md`, `data-model.sql`, `ERD-new.png`, `day2_ahmed/NEW-ERD.png` describe a 22-table schema not deployed; `DATA_MODEL.md` cites missing `migrations/001_unified_schema.sql`; `docs/ARCHITECTURE.md`/`docs/API_CONTRACT.md` describe unimplemented components; `DAY2_AHMED_HANDOVER.md` states D2 (authoritative = `anzma_schema_and_seed.sql` + `003`).
+- **Situation / evidence:** `docs/DATA_MODEL.md`, `docs/data-model.sql`, ERD assets, `docs/ARCHITECTURE.md` and API drafts describe schemas/routes not deployed. The current runtime authority is `db/init/anzma_schema_and_seed.sql` plus migrations 003–005, as confirmed by the live schema inspection recorded in `PRODUCTIZATION_IMPLEMENTATION_REPORT.md`.
 - **Action:** after review, mark those files “superseded draft” with a pointer to this document set; reuse their ideas (timezone, `zone_type`, `resolves_event_type_id`, `asset_state`, `evidence`) as already incorporated. (Day 1 modifies none of them.)
 - **Depends on:** team approval of these documents.
 - **Acceptance:** each superseded file starts with a banner naming the authoritative documents; the README links `CORE_DATA_ARCHITECTURE.md` as the data-model reference.
@@ -187,7 +183,7 @@ flowchart TD
 
 ### ISS-016 — Asset health is implemented four times
 - **Priority:** P2 · **Phase:** M6
-- **Evidence:** `app/dashboard_core_pg.py::_asset_status_counts`; `app/frontend_api.py::equipment_health`; `004_chat_views.sql::v_asset_overview`; `app/chat_facts.py::_conditions/_status`. `v_asset_overview` uses window `(as_of−24h, as_of]` and counts any critical event, while the KPI uses `[start,end)` and excludes recovered paired faults.
+- **Evidence:** `app/repositories/dashboard_core_pg.py::_asset_status_counts`; `app/api/frontend_api.py::equipment_health`; `004_chat_views.sql::v_asset_overview`; `app/api/chat_facts.py` status functions. `v_asset_overview` uses window `(as_of−24h, as_of]` and counts any critical event, while the KPI uses `[start,end)` and excludes recovered paired faults.
 - **Action:** compare outputs on current data; choose one definition; implement once (repository/view); other paths call it.
 - **Depends on:** ISS-009, ISS-013.
 - **Acceptance:** parity test across KPI, equipment-health, chat for every system and building; any approved difference is listed.

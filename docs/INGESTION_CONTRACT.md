@@ -1,13 +1,13 @@
 # INGESTION_CONTRACT.md — Anzma AI Insight Core
 
-**Contract version:** `1.0` (draft for review)
-**Status:** Proposed. **Nothing in this document is implemented yet.** The only write path that exists today is `POST /events` (one event, internal `asset_id`, no provenance).
+**Contract version:** `1.0`
+**Status:** v1 ingestion decisions approved and implemented in the Core. Existing write path `POST /events` (one event, internal `asset_id`, no provenance) remains supported for compatibility.
 **Audience:** connector developers (any vendor, any language) and Core developers.
 **Companion documents:** [`CONNECTOR_ARCHITECTURE.md`](CONNECTOR_ARCHITECTURE.md) (who does what), [`CONTRACT_TO_DB_MAPPING.md`](CONTRACT_TO_DB_MAPPING.md) (how it lands in PostgreSQL), [`CANONICAL_DATA_MODEL.md`](CANONICAL_DATA_MODEL.md) (entity semantics), [`HISTORIAN_DESIGN.md`](HISTORIAN_DESIGN.md) (storage, retention, buffering).
 
 **How to read this document.** Entity semantics (assets, metrics, quality meanings, freshness maths, state model) are defined once in `CANONICAL_DATA_MODEL.md` and are referenced, not repeated. This document owns the **wire format**: envelope, record schemas, validation order, rejection codes, response shapes, authentication. Where an approved decision changes the canonical model, it is listed in §14 so the canonical document can be amended.
 
-Tags: **[Decided]** approved by the team, **[Proposed]** recommended here and needs confirmation, **[Open]** unresolved.
+Tags: **[Decided]** approved by the team; **[Proposed]** reserved for future work and not part of v1.
 
 ---
 
@@ -26,7 +26,7 @@ Tags: **[Decided]** approved by the team, **[Proposed]** recommended here and ne
 | Item | Rule |
 |---|---|
 | Protocol | HTTPS, JSON (`Content-Type: application/json; charset=utf-8`). TLS is mandatory outside local development. |
-| Base path | `/api/v1/ingest` **[Proposed]** — prefix must be confirmed with the platform owner; today's runtime routes have no `/api/v1` prefix. |
+| Base path | `/api/v1/ingest`; approved versioned Core route. |
 | Authentication | `Authorization: Bearer <api_key>` (see §11). Authentication is transport-level and **not** part of the payload, so the method can change later without a new contract version. |
 | Field names | `snake_case`. |
 | Codes | `metric_code` and `event_type` are lowercase `snake_case` and equal `metric_types.name` / `event_types.name`. `asset_code`, `building_code`, `source_code` match `^[A-Za-z0-9][A-Za-z0-9_.\-]{0,63}$`. |
@@ -35,16 +35,16 @@ Tags: **[Decided]** approved by the team, **[Proposed]** recommended here and ne
 | Strings | UTF-8. `external_id` ≤ 128 chars. `message` ≤ 500 chars. |
 | Opaque objects | `details` and `source_metadata` ≤ 8 KiB serialized each. |
 | Unknown fields | Ignored; the response lists them in `warnings`. Unknown **enum values** and unknown `record_type` are rejected. |
-| Body size | ≤ 5 MiB **[Proposed default, configurable]**. |
+| Body size | ≤ 5 MiB; batches also have a 5000-record maximum. |
 
 ### Endpoints
 
 | Method | Path | Purpose |
 |---|---|---|
 | `POST` | `/api/v1/ingest/batches` | Submit a batch of telemetry / event / state records. A single record is a batch of one. |
-| `GET` | `/api/v1/ingest/batches/{batch_id}` | Retrieve the stored result of a batch previously sent by the same source (full rejection list). |
+| `GET` | `/api/v1/ingest/batches/{batch_id}` | Retrieve the stored result of a batch previously sent by the authenticated source (full rejection list). |
 
-**[Proposed]** One endpoint carries all three record types (`record_type` discriminates) so there is one validation pipeline and one idempotency mechanism. Per-type convenience endpoints are intentionally **not** in v1. Permission to send a type is enforced per record through key scopes (§11).
+One endpoint carries all three record types (`record_type` discriminates) so there is one validation pipeline and one idempotency mechanism. Per-type convenience endpoints are not in v1. Permission to send a type is enforced per record through key scopes (§11).
 
 ---
 
@@ -57,7 +57,7 @@ Tags: **[Decided]** approved by the team, **[Proposed]** recommended here and ne
 | `sent_at` | When the connector sent the batch (envelope). Diagnostic only. Used to estimate clock skew; never stored as a fact time. | Connector | `ingestion_batches` |
 | `evaluated_at` | When the Core computed a derived value such as freshness or state. | Core | state tables (later) |
 
-**On `event_time`.** **[Proposed]** There is no separate `event_time` field in v1. For event records, `observed_at` **is** the event time (the moment the event happened at the source). Two names for one instant would invite connectors to fill them differently, and the existing tables already store a single `ts`. If a vendor also provides a separate "logged at" time, the connector may put it in `source_metadata`.
+**On `event_time`.** There is no separate `event_time` field in v1. For event records, `observed_at` **is** the event time (the moment the event happened at the source). If a vendor also provides a separate "logged at" time, the connector may put it in `source_metadata`.
 
 ### Rules
 
@@ -66,7 +66,7 @@ Tags: **[Decided]** approved by the team, **[Proposed]** recommended here and ne
 | Format | RFC 3339 in **UTC with a trailing `Z`**, fractional seconds allowed (≤ 6 digits). Example `2026-11-15T09:15:00Z`. |
 | Time zones | Connectors convert to UTC before sending. A timestamp with any offset (`+02:00`) or without `Z` is **rejected** (`INVALID_TIMESTAMP`), not silently converted. The original local time may be kept in `source_metadata.original_time`. Display time zones are a Core/UI concern (building time zone). |
 | Future data | `observed_at` must be ≤ `received_at + 5 min` (same tolerance `POST /events` uses today). Otherwise `FUTURE_TIMESTAMP`. |
-| Too old | `observed_at` older than `received_at − 90 days` is rejected as `TIMESTAMP_TOO_OLD` **[Proposed default, configurable per source]**. This catches epoch-zero and unit-confusion bugs (seconds vs milliseconds). |
+| Too old | No age cutoff is enforced by v1; valid late/backfill records are accepted subject to natural-key conflict rules. |
 | Late-arriving data | **Accepted**, never rejected for lateness alone. A record is *late* when `received_at − observed_at` exceeds the source's delay threshold (default 15 min **[Proposed]**). Lateness is derived, not stored. Late data never rewrites existing samples. Detection runs are idempotent, so late records are evaluated on the next run. |
 | Ordering | Records may arrive in any order. The Core orders by `observed_at`. |
 | Precision | Retries must reproduce `observed_at` **exactly**, including fractional seconds, or the retry is a different record. |
@@ -527,9 +527,9 @@ Invalid data (bad schema, unknown asset/metric, wrong unit, non-finite value) is
 | Body size | 5 MiB | |
 | `details` / `source_metadata` | 8 KiB each | Larger → record rejected `PAYLOAD_TOO_LARGE`. |
 
-All **[Proposed defaults]**, configurable per deployment. Connectors should target ≈ 500–1000 records per batch.
+v1 enforces a 5 MiB request limit and 5000 records per batch. Connectors should target ≈ 500–1000 records per batch.
 
-### 8.2 Acceptance model — partial acceptance **[Decided, D4]**
+### 8.2 Acceptance model — partial acceptance **[Approved for v1, 18 November 2026]**
 
 | Problem found | Result |
 |---|---|
@@ -540,7 +540,7 @@ Example: 1000 records, 990 valid, 10 invalid → `accepted: 990`, `rejected: 10`
 
 Per-record outcomes: `accepted`, `duplicate` (idempotent no-op), `rejected`.
 
-**Atomicity.** One database transaction per batch covers the stored records, the `ingestion_batches` row and the `ingestion_rejections` rows. A crash leaves nothing partial and the connector retries.
+**Atomicity and response meaning.** One database transaction per batch covers accepted fact rows, the `ingestion_batches` row, and `ingestion_rejections`. A transaction/database failure rolls everything back and returns retryable `503`; the client retries the same body and `batch_id`. Record validation failures do not abort the transaction: valid rows and rejected-record audit rows commit together. The response includes `transaction: COMMITTED`; `200 PARTIAL` means mixed outcomes committed. `422 REJECTED` means every record was rejected and that rejection audit committed; clients must not treat it as proof that no server-side operation occurred. Envelope-level errors occur before a batch audit is created.
 
 ### 8.3 Batch idempotency
 
@@ -549,12 +549,12 @@ Per-record outcomes: `accepted`, `duplicate` (idempotent no-op), `rejected`.
 * Same `batch_id` with a **different** payload (the Core stores a SHA-256 of the body) → `409 BATCH_ID_REUSED`.
 * Records rejected in a batch are **not** retried by resending the same `batch_id`. Fix them and send a **new** `batch_id`.
 
-### 8.4 Duplicates and conflicts **[Decided, D3]**
+### 8.4 Duplicates and conflicts **[Approved for v1, 18 November 2026]**
 
 | Case | Outcome |
 |---|---|
 | Same natural key, same content | `duplicate`. Counted, not stored again. |
-| Same natural key, different content | **First write wins.** The existing row is untouched; the new record is rejected `CONFLICT` and kept in `ingestion_rejections`. |
+| Same natural key, different content | **First write wins.** The existing row is untouched; the new record is rejected `CONFLICT` and kept in `ingestion_rejections`. This v1 has no correction/overwrite operation. |
 
 "Same value" for telemetry means `|a − b| ≤ 1e-9 × max(1, |a|)` after the connector's own conversion **[Proposed]**, so a retried `24.6` versus `24.600000000000001` is a duplicate, not a conflict. For events and states, "same content" compares `event_type`/`severity` (events) and `reported_state`/`availability` (states).
 
@@ -624,32 +624,30 @@ Each record is validated in this order; the first failure rejects it.
 
 | HTTP | Code | Retry with same `batch_id`? |
 |---|---|---|
-| 400 | `MALFORMED_JSON`, `INVALID_ENVELOPE` | No — fix the payload |
-| 401 | `AUTH_MISSING`, `AUTH_INVALID`, `AUTH_EXPIRED` | No — fix credentials |
-| 403 | `SOURCE_MISMATCH`, `BUILDING_NOT_PERMITTED`, `SCOPE_DENIED`, `SOURCE_DISABLED` | No |
+| 400 | `INVALID_CONTENT_LENGTH` | No — fix the request |
+| 401 | `AUTH_INVALID` | No — fix credentials |
+| 403 | `SOURCE_MISMATCH`, `SOURCE_DISABLED` | No |
 | 409 | `BATCH_ID_REUSED` | No — use a new `batch_id` |
 | 413 | `BATCH_TOO_LARGE` | No — split the batch |
-| 422 | `UNSUPPORTED_CONTRACT_VERSION`, `UNKNOWN_BUILDING`, `ALL_RECORDS_REJECTED` | No |
-| 429 | `RATE_LIMITED` | **Yes**, after `Retry-After` |
-| 503 | `SERVICE_UNAVAILABLE` (database down) | **Yes**, after `Retry-After` |
-| 500 | `INTERNAL_ERROR` | **Yes**, with backoff |
+| 422 | `UNSUPPORTED_CONTRACT_VERSION`, `UNKNOWN_BUILDING`, all records rejected | No — envelope errors need correction; rejected records are audited |
+| 503 | `INGESTION_SCHEMA_NOT_APPLIED`, `SERVICE_UNAVAILABLE` | Retry same batch after migration or transient database recovery |
 
 ---
 
 ## 11. Authentication and authorization
 
-**[Decided, D5]** v1 starts with **one API key per data source**, with limited permissions. The final authentication method and authorization model remain **[Open]**; the contract keeps authentication out of the payload so mTLS or OAuth2 client credentials can replace keys later without a new contract version.
+**Approved for v1 on 18 November 2026:** one rotatable API key per data source, with limited permissions. The key is sent in the Authorization header, stored only as a one-way hash, and bound to exactly one registered source/building. No key or secret is included in the JSON payload.
 
-| Aspect | v1 rule **[Proposed]** |
+| Aspect | v1 rule |
 |---|---|
 | Presentation | `Authorization: Bearer azk_<prefix>_<secret>` |
-| Storage | Only a hash is stored (`source_credentials`), plus a short visible prefix for lookup. The secret is shown once at creation. |
+| Storage | Only a SHA-256 hash of the high-entropy random token is stored in `source_credentials`, plus a short prefix for lookup. The full secret is shown once at provisioning. |
 | Binding | A key belongs to exactly one source, and therefore one building. A request whose `source.source_code` differs from the key's source is refused `SOURCE_MISMATCH`. |
 | Scopes | `ingest:telemetry`, `ingest:event`, `ingest:state`. Checked per record. |
-| Lifecycle | Optional expiry; revocation; two active keys per source for zero-downtime rotation; `last_used_at` recorded. |
+| Lifecycle | Expiry is optional; revocation is immediate; multiple active keys per source support rotation; `last_used_at` is recorded. |
 | Disabled source | `status = DISABLED/ERROR` or revoked key ⇒ `403 SOURCE_DISABLED`. |
 | Errors | Never reveal whether a source exists. A bad key is `401 AUTH_INVALID`. |
-| Development | A dev key comes from configuration; the endpoint is never open. |
+| Development | Provision a source key with `scripts/ingestion_admin.py`; there is no unauthenticated development bypass. |
 
 **Context.** The existing API, Socket.IO and database port currently have no authentication (ISS-015). Ingestion must be the first protected surface even if the rest is not yet.
 
@@ -668,9 +666,15 @@ All batch responses share one shape. `rejected[]` lists at most 100 entries; whe
   "received_at": "2026-11-15T09:15:05Z",
   "contract_version": "1.0",
   "counts": { "received": 3, "accepted": 3, "duplicate": 0, "rejected": 0 },
+  "results": [
+    { "index": 0, "record_type": "telemetry", "outcome": "ACCEPTED", "record_id": 123 },
+    { "index": 1, "record_type": "event", "outcome": "ACCEPTED", "record_id": 456 },
+    { "index": 2, "record_type": "state", "outcome": "ACCEPTED", "record_id": 789 }
+  ],
   "rejected": [],
   "rejected_truncated": false,
-  "warnings": []
+  "warnings": [],
+  "transaction": "COMMITTED"
 }
 ```
 
@@ -683,12 +687,19 @@ All batch responses share one shape. `rejected[]` lists at most 100 entries; whe
   "received_at": "2026-11-15T09:30:05Z",
   "contract_version": "1.0",
   "counts": { "received": 3, "accepted": 1, "duplicate": 1, "rejected": 1 },
+  "results": [
+    { "index": 0, "record_type": "telemetry", "outcome": "ACCEPTED", "record_id": 123 },
+    { "index": 1, "record_type": "event", "outcome": "DUPLICATE" },
+    { "index": 2, "record_type": "telemetry", "outcome": "REJECTED", "reason_code": "UNIT_MISMATCH",
+      "message": "unit does not match the canonical unit" }
+  ],
   "rejected": [
     { "index": 2, "record_type": "telemetry", "reason_code": "UNIT_MISMATCH",
-      "message": "unit 'F' is not allowed for metric 'temperature'; expected 'C'" }
+      "message": "unit does not match the canonical unit" }
   ],
   "rejected_truncated": false,
-  "warnings": [ { "index": 0, "code": "UNKNOWN_FIELD", "message": "field 'foo' ignored" } ]
+  "warnings": [ { "index": 0, "code": "UNKNOWN_FIELD", "message": "unknown field 'foo' ignored" } ],
+  "transaction": "COMMITTED"
 }
 ```
 
@@ -709,7 +720,7 @@ Same body, `"status": "REJECTED"`, `counts.accepted = 0` and at least one reject
 }
 ```
 
-`429` and `503` include a `Retry-After` header and `"retryable": true`.
+Database-unavailable `503` responses set `retryable: true`; retry the same `batch_id`. Schema-not-applied `503` requires migration 006 before retrying. A replay of an already committed exact batch returns the saved response with `Idempotent-Replay: true`.
 
 ### 12.5 Connector retry rule of thumb
 
@@ -717,7 +728,7 @@ Same body, `"status": "REJECTED"`, `counts.accepted = 0` and at least one reject
 |---|---|
 | `200` (`ACCEPTED` / `PARTIAL`) | Done. Keep rejected records for operator review; do not resend them unchanged. |
 | `422`, `400`, `401`, `403`, `409`, `413` | Do not retry blindly. Fix the cause (credentials, mapping, payload, size). |
-| `429`, `503`, `500`, network error | Retry the **same batch with the same `batch_id`** and exponential backoff with jitter. |
+| Database `503`, network error | Retry the **same batch with the same `batch_id`** and exponential backoff with jitter. For schema-not-applied `503`, wait until migration 006 is deployed. |
 
 ---
 
@@ -850,7 +861,7 @@ Vectors 1, 3, 6–9, 11, 12, 14 were exercised against the JSON Schemas in this 
 | §6 optional Core-side `unit_conversions` | Deferred; exact canonical unit only | Smaller v1 |
 | §16.5 response shape | Replaced by §12 | Adds `status`, counts, retry semantics |
 | Schema comment "1..5000 atomic batch" | `0..5000`, **partial acceptance** | D4 |
-| §17 "route name [Open]" | `/api/v1/ingest/...` proposed | Pending platform owner |
+| §17 route name | `/api/v1/ingest/batches` | Approved and implemented |
 
 ---
 
@@ -862,14 +873,14 @@ Vectors 1, 3, 6–9, 11, 12, 14 were exercised against the JSON Schemas in this 
 | D2 | Connector sends state, or Core infers? | Connector reports what it knows; Core computes freshness; no `OFFLINE` from silence. | Decided |
 | D3 | Same key, different values? | First write wins; later record rejected and logged. | Decided |
 | D4 | One bad record in a batch? | Partial acceptance with per-record reasons. | Decided |
-| D5 | Connector authentication? | API key per source with scopes first; final model open. | Decided (start) / Open (final) |
+| D5 | Connector authentication? | Hashed bearer API key per source, scoped, revocable, and rotatable. | Decided and implemented |
 | P1 | `event_time` as a separate field? | No; `observed_at` is the event time. | Proposed |
 | P2 | Endpoint layout | Single batch endpoint; per-type endpoints deferred. | Proposed |
 | P3 | Empty batch | Allowed as keepalive. | Proposed |
 | P4 | Unmapped external asset | Reject `ASSET_UNRESOLVED`; no auto-create. | Proposed |
 | P5 | Unit conversion in Core | Deferred; connector converts. | Proposed |
 | P6 | `source_event_id` | Required for events. | Proposed |
-| P7 | Maximum back-date | 90 days, configurable. | Proposed |
-| P8 | Path prefix `/api/v1` | Pending platform owner. | Open |
+| P7 | Maximum back-date | No age cutoff in v1; natural-key conflict handling still applies. | Decided |
+| P8 | Path prefix `/api/v1` | `/api/v1/ingest/batches` and source-scoped batch lookup. | Decided and implemented |
 | P9 | Sanctioned value corrections | Not in v1. | Open |
 | P10 | Deprecation window for old MAJOR | Not defined. | Open |
