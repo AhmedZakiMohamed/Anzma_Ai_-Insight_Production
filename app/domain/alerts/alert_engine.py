@@ -249,18 +249,19 @@ def rule_net_bandwidth(ctx):
     n = T["bandwidth_sustain"]
     for a in of_system(ctx, "NETWORK"):
         reads = of(ctx, a["id"], "BANDWIDTH_USAGE", need_value=True)
-        for run in runs(reads, lambda e: e["value"] > T["bandwidth_warn"], T["reading_gap_min"], n):
+        for run in runs(reads, lambda e: e["value"] > T["bandwidth_warn_pct"], T["reading_gap_min"], n):
             m = mean(e["value"] for e in run)
             peak = max(e["value"] for e in run)
             loss = max(e["details"].get("packet_loss_pct", 0) for e in run)
-            sev = "CRITICAL" if m >= T["bandwidth_crit_mean"] else "WARNING"
-            facts = {"mean_mbps": round(m, 1), "peak_mbps": round(peak, 1), "readings": len(run),
+            sev = "CRITICAL" if m >= T["bandwidth_crit_mean_pct"] else "WARNING"
+            facts = {"mean_pct": round(m, 1), "peak_pct": round(peak, 1), "readings": len(run),
                      "duration_min": round(minutes(run[0]["ts"], run[-1]["ts"]), 1),
                      "packet_loss_max_pct": round(loss, 2)}
-            summary = (f"{a['name']}: bandwidth averaged {m:.0f} Mbps (peak {peak:.0f} Mbps) over {len(run)} "
-                       f"consecutive readings, above the {T['bandwidth_warn']:g} Mbps threshold.")
+            summary = (f"{a['name']}: bandwidth utilization averaged {m:.1f}% (peak {peak:.1f}%) over {len(run)} "
+                       f"consecutive readings, above the {T['bandwidth_warn_pct']:g}% warning threshold.")
             out.append(make_alert("NET_BANDWIDTH_HIGH", sev, a, run, summary, facts, run[n - 1]["ts"],
-                                  {"warn": T["bandwidth_warn"], "crit_mean": T["bandwidth_crit_mean"], "unit": "Mbps"},
+                                  {"warn_pct": T["bandwidth_warn_pct"],
+                                   "crit_mean_pct": T["bandwidth_crit_mean_pct"], "unit": "%"},
                                   key=lambda e: e["value"] or 0))
         m_n = T["packet_loss_sustain"]
         for run in runs(reads, lambda e: e["details"].get("packet_loss_pct", 0) > T["packet_loss_warn"],
@@ -269,7 +270,7 @@ def rule_net_bandwidth(ctx):
             lm = mean(losses)
             sev = "CRITICAL" if lm >= T["packet_loss_crit_mean"] else "WARNING"
             facts = {"loss_max_pct": round(max(losses), 2), "loss_mean_pct": round(lm, 2), "readings": len(run),
-                     "bw_mean_mbps": round(mean(e["value"] for e in run), 1)}
+                     "bw_mean_pct": round(mean(e["value"] for e in run), 1)}
             summary = (f"{a['name']}: packet loss averaged {lm:.1f}% (max {max(losses):.1f}%) over {len(run)} "
                        f"consecutive readings, above the {T['packet_loss_warn']:g}% threshold.")
             out.append(make_alert("NET_PACKET_LOSS", sev, a, run, summary, facts, run[m_n - 1]["ts"],
@@ -437,7 +438,8 @@ def rule_anomaly(ctx, system, types, rule, min_dev, unit):
 RULE_FUNCS = [
     rule_hvac_temp, rule_hvac_filter, rule_net_link, rule_net_bandwidth, rule_access, rule_cctv, rule_fire,
     lambda ctx: rule_anomaly(ctx, "HVAC", TEMP_TYPES, "HVAC_TEMP_ANOMALY", T["anomaly_min_dev_temp"], "°C"),
-    lambda ctx: rule_anomaly(ctx, "NETWORK", ("BANDWIDTH_USAGE",), "NET_BANDWIDTH_ANOMALY", T["anomaly_min_dev_bw"], "Mbps"),
+    lambda ctx: rule_anomaly(ctx, "NETWORK", ("BANDWIDTH_USAGE",), "NET_BANDWIDTH_ANOMALY",
+                             T["anomaly_min_dev_bw_pct_points"], "%"),
 ]
 
 

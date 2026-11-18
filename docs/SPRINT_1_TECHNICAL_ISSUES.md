@@ -56,7 +56,7 @@ flowchart TD
 
 | ID | Question | Blocks |
 |---|---|---|
-| Q1 | Canonical unit for `bandwidth_util`: % utilisation or Mbps? | ISS-003 |
+| Q1 | Canonical unit for `bandwidth_util`: % utilisation or Mbps? | **Resolved for current runtime:** `%`; no link capacity is stored. Provisional alert limits: 80% warning / 90% critical mean. Recalibrate when capacity data exists. |
 | Q2 | IANA time zone and working hours for Main Tower and Data Center Annex | ISS-008 |
 | Q3 | Will two customers ever share one database? (RLS vs separate DB/schema) | ISS-005, ISS-011 |
 | Q4 | Batch semantics: atomic (as in `docs/API_CONTRACT.md`) or per-record results | ISS-004 |
@@ -86,12 +86,12 @@ flowchart TD
 - **Acceptance:** an existing database at the current state upgrades to the next migration without data loss; a fresh clone builds a database with the same schema as an upgraded one (schema diff empty); applied migrations are listed in `schema_migrations`.
 
 ### ISS-003 — Bandwidth unit mismatch silently disables alert rules
-- **Priority:** P0 · **Phase:** decision now; fix behind a flag (separate change)
-- **Situation / evidence:** seed `metric_types`: `bandwidth_util` unit `'%'`. `alert_config.T`: `bandwidth_warn=900.0`, `bandwidth_crit_mean=980.0`; `alert_engine.rule_net_bandwidth` and `rule_anomaly(... "Mbps")` use them; `db_adapter.METRIC_MAP` labels the value `%`; `integrity_rules.EVENT_CATALOG` says `Mbps`; `alert_config.PLAYBOOKS["NET_LOSS"]` splits causes on `bw_mean_mbps > 900`. Result: `NET_BANDWIDTH_HIGH` and `NET_BANDWIDTH_ANOMALY` cannot fire and `NET_LOSS` always picks `LINK_QUALITY`. Acknowledged in `DAY2_AHMED_HANDOVER.md` (limitation 3) and `README.md`.
-- **Action:** decide Q1; register the canonical unit in `metric_types`; make thresholds, labels, `METRIC_MAP`, `EVENT_CATALOG` and facts consistent; document the expected new alerts before enabling.
-- **Depends on:** Q1; ISS-013.
-- **Acceptance:** a unit test proves a value above the warning threshold in the canonical unit raises `NET_BANDWIDTH_HIGH`; no module labels the metric with a different unit; golden diff lists exactly the approved new alerts.
-- **Note:** this is a result-changing fix (`DATA_MIGRATION_PLAN.md` §9.4).
+- **Priority:** P0 · **Status:** code/documentation updated; regression verification passed on the current change.
+- **Situation / evidence:** the database stores `bandwidth_util` as `%`; previous rule thresholds and facts used Mbps, preventing bandwidth alerts and forcing the packet-loss explanation toward link quality.
+- **Change:** retain `%` as canonical (no link-capacity field exists); use provisional 80% warning, 90% critical mean, and 15 percentage-point minimum anomaly deviation. Align alert facts, summaries, playbook comparisons, and the integrity catalogue to `%`.
+- **Verification:** unit/integration suites 138/138; dashboard script exit 0; S1 fallback 14/14 and live model 15/15; schema `OVERALL OK`. Seed remains 10 alerts / 8 incidents with no bandwidth-high/anomaly alert; its maximum is 72.32% and it has no sustained 15-point deviation. Synthetic 85% packet-loss selects congestion while seed's 68.6% selects link quality.
+- **Remaining:** calibrate the provisional limits when link capacity/configuration data becomes available.
+- **Note:** this is a result-changing fix (`DATA_MIGRATION_PLAN.md` §9.4); previous test results do not verify the current working tree.
 
 ---
 

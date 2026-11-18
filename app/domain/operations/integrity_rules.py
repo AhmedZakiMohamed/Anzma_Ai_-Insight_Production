@@ -22,7 +22,7 @@ EVENT_CATALOG = {
         "FILTER_FAULT":        ("FAULT", None),
     },
     "NETWORK": {
-        "BANDWIDTH_USAGE": ("MEASUREMENT", "Mbps"),
+        "BANDWIDTH_USAGE": ("MEASUREMENT", "%"),
         "UPTIME_REPORT":   ("HEARTBEAT", "seconds"),
         "LINK_DOWN":       ("STATE_OPEN", None),
         "LINK_UP":         ("STATE_CLOSE", None),

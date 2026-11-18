@@ -14,7 +14,9 @@ T = dict(
     hvac_temp_warn=29.0, hvac_temp_crit=32.0,
     server_temp_warn=25.0, server_temp_crit=30.0,
     reading_gap_min=20,   # telemetry cadence in the demo seed is 15 min (was 10 for 5-min data)
-    bandwidth_warn=900.0, bandwidth_crit_mean=980.0, bandwidth_sustain=3,
+    # bandwidth_util is a percentage. These are provisional utilization thresholds until
+    # per-link capacity/configuration is available.
+    bandwidth_warn_pct=80.0, bandwidth_crit_mean_pct=90.0, bandwidth_sustain=3,
     packet_loss_warn=1.0, packet_loss_crit_mean=3.0, packet_loss_sustain=3,
     link_flap_count=3, link_flap_window_min=30,
     door_held_open_s=120,
@@ -23,7 +25,7 @@ T = dict(
     motion_burst_count=5, motion_burst_window_min=30,
     battery_warn=20.0, battery_crit=10.0, battery_cluster_gap_min=60,
     anomaly_z=4.0, anomaly_sustain=3, anomaly_min_baseline=30,
-    anomaly_min_dev_temp=1.0, anomaly_min_dev_bw=80.0,
+    anomaly_min_dev_temp=1.0, anomaly_min_dev_bw_pct_points=15.0,
 )
 
 RULES = {
@@ -65,10 +67,18 @@ def describe(facts, cond):
     """Human-readable list of the facts that justify a cause or action."""
     out = []
     for key, want in (cond or {}).items():
+        label = {"bw_mean_pct": "mean bandwidth utilization"}.get(key, key)
+        percent = key.endswith("_pct") or key.endswith("_pct_points")
+
+        def value_text(value):
+            if percent and isinstance(value, (int, float)):
+                return f"{value:g}%"
+            return str(value)
+
         if isinstance(want, tuple):
-            out.append(f"{key} = {facts.get(key)} (required {want[0]} {want[1]})")
+            out.append(f"{label} = {value_text(facts.get(key))} (required {want[0]} {value_text(want[1])})")
         else:
-            out.append(f"{key} = {facts.get(key)}")
+            out.append(f"{label} = {value_text(facts.get(key))}")
     return out
 
 
@@ -143,12 +153,12 @@ PLAYBOOKS = {
     },
     "NET_LOSS": {
         "causes": [
-            C("CONGESTION", "Packet loss appeared together with high traffic, which points to congestion.", {"bw_mean_mbps": (">", 900.0)}),
-            C("LINK_QUALITY", "Packet loss appeared without high traffic, which points to a physical-layer problem.", {"bw_mean_mbps": ("<=", 900.0)}),
+            C("CONGESTION", "Packet loss appeared together with high traffic, which points to congestion.", {"bw_mean_pct": (">", T["bandwidth_warn_pct"])}),
+            C("LINK_QUALITY", "Packet loss appeared without high traffic, which points to a physical-layer problem.", {"bw_mean_pct": ("<=", T["bandwidth_warn_pct"])}),
         ],
         "actions": [
-            A("LOSS_CONGESTION", 1, "Check queue drops and reduce load on this link.", {"bw_mean_mbps": (">", 900.0)}),
-            A("LOSS_PHYSICAL", 1, "Inspect cabling and transceivers and check CRC/error counters.", {"bw_mean_mbps": ("<=", 900.0)}),
+            A("LOSS_CONGESTION", 1, "Check queue drops and reduce load on this link.", {"bw_mean_pct": (">", T["bandwidth_warn_pct"])}),
+            A("LOSS_PHYSICAL", 1, "Inspect cabling and transceivers and check CRC/error counters.", {"bw_mean_pct": ("<=", T["bandwidth_warn_pct"])}),
         ],
     },
     "NET_ANOMALY": {

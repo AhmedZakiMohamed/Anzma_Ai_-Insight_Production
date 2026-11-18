@@ -22,7 +22,7 @@ Format: **Current structure → Proposed canonical structure → Required adapta
 | `system_types(code CHECK …)` | same codes; CHECK dropped | None. `reference_data.SYSTEM_CODES` later read from the table |
 | `assets(asset_id, asset_code, name, asset_type, system_type_id, location_id)` | + `building_id`, `parent_asset_id`, `manufacturer`, `model`, `serial_number`, `lifecycle_status`, `installed_at`, `metadata` | None. `building_id` backfilled from `locations` |
 | *(none)* | `asset_external_ids`, `data_sources` | New; seed `legacy-seed`, `core-engine` |
-| `metric_types(metric_id, name, unit)` | + `value_kind`, `min_plausible`, `max_plausible`; `unit` = canonical unit | None. Unit decision for `bandwidth_util` (**Q1**) is a *separate, approved change* (§9.4) |
+| `metric_types(metric_id, name, unit)` | + `value_kind`, `min_plausible`, `max_plausible`; `unit` = canonical unit | `bandwidth_util` remains canonical `%` in the current runtime; thresholds are provisional until per-link capacity data exists. |
 | `event_types(event_type_id, name)` | + `event_class`, `resolves_event_type_id` | Later replaces `FAULT_RECOVERY_PAIRS`, `CLOSERS`, `v_camera_status` pair logic (Phase M6, parity-tested) |
 | `metric_type_system_compat`, `event_type_system_compat` | unchanged; enforced by the ingestion service | `integrity_rules.EVENT_CATALOG` (Python duplicate) retired later |
 | `telemetry_records(telemetry_id, asset_id, metric_id, ts, value)` | + `building_id`, `received_at`, `source_id`, `batch_id`, `quality`, `contract_version`, `source_metadata`; `ts` = observed time | None. Legacy rows: `source_id`→`legacy-seed`, `quality='GOOD'`, `received_at` **NULL** (unknown, not guessed) |
@@ -39,7 +39,7 @@ Format: **Current structure → Proposed canonical structure → Required adapta
 | Consumer | Evidence | Compatibility assessment |
 |---|---|---|
 | KPI engine `app/dashboard_core_pg.py` | SQL on `assets, system_types, locations, event_records, event_types, telemetry_records, metric_types`; constants `temperature`, `packet_loss`, `bandwidth_util`, `heartbeat` | **Compatible without change** through M1–M4 (no column removed/renamed; added columns are ignored). Time windows `[start, end)`; building filter via `locations.building_id` stays valid |
-| Alert engine `day2_ahmed/alert_engine.py` + `db_adapter.load_context` | reads `assets`, `event_records` (via `EVENT_MAP`), `telemetry_records` (`temperature`, `bandwidth_util`, `packet_loss`) | **Compatible.** Adaptation only for: units (F-05, approved separately), timezone (F-11), zone_type (F-12). A `quality` filter is added to the loaders and is a no-op on existing data |
+| Alert engine `day2_ahmed/alert_engine.py` + `db_adapter.load_context` | reads `assets`, `event_records` (via `EVENT_MAP`), `telemetry_records` (`temperature`, `bandwidth_util`, `packet_loss`) | **Compatible.** Remaining adaptations: timezone (F-11), zone_type (F-12). The current runtime aligns bandwidth thresholds/facts to `%`. A `quality` filter is added to the loaders and is a no-op on existing data |
 | Incident engine `incident_engine.py` | `alerts`, `incidents`, `assets`, `locations`; grouping rule `same_asset_or_system_within_15_min` | **Compatible.** `building_id` is populated, grouping unchanged |
 | Evidence `evidence.py` | `alerts.evidence` JSON; re-reads `event_records.event_id`, `telemetry_records.telemetry_id`; compares `ts`, `value`, event type through `db_adapter.EVENT_MAP` | **Compatible.** Ids and values are never changed; `alert_evidence` is added in parallel |
 | Validation / AI `validation.py`, `ai_explainer.py`, `recommendations.py` | `alerts` row, `alert_config.PLAYBOOKS` | **Compatible**, no data-model dependency beyond `alerts` |
@@ -152,7 +152,7 @@ Contract validation (accept/reject matrix), idempotent replay (same batch twice 
 
 | Change | Expected result difference | Protection |
 |---|---|---|
-| Fix `bandwidth_util` unit/thresholds (F-05, **Q1**) | `NET_BANDWIDTH_HIGH` / `NET_BANDWIDTH_ANOMALY` can fire; `NET_LOSS` cause may become `CONGESTION`; chat/dashboard alert counts change | Separate PR; feature-flagged thresholds; expected-diff list written *before* running; golden diff reviewed alert by alert |
+| Fix `bandwidth_util` unit/thresholds (F-05, **Q1**) | Implemented and regression verified: rules/facts use `%`; `NET_BANDWIDTH_HIGH` / `NET_BANDWIDTH_ANOMALY` can fire; `NET_LOSS` can select `CONGESTION`; seed remains below the provisional 80% warning threshold | Verified 138/138 unit/integration checks and 14/14 fallback + 15/15 live S1 checks. Thresholds remain provisional until capacity data is recorded. |
 | Per-building timezone replacing fixed UTC+2 (F-11, **Q2**) | “after hours” facts differ only if the IANA zone’s offset ≠ +2 at the event time (e.g. during DST) | Backfill the zone that reproduces +2 where intended, or accept and document differences; diff limited to `after_hours`-dependent rules |
 | `zone_type` replaces `'Server Room'` match (F-12) | None if the existing room is flagged | Parity test |
 | Reconcile `v_asset_overview` with KPI health (F-07) | Chat answers using that view may change where a recovered paired fault is counted | Compare both definitions on current data first; approve which is canonical |

@@ -161,7 +161,7 @@ An asset may have several external IDs (several sources). The contract may ident
 | `contract_version` | NEW column | e.g. `1.0` |
 | `source_metadata` | NEW column | Optional JSONB: raw payload or reference to it |
 
-**Unit normalization** — *connectors convert, Core validates.* The contract’s `unit` must equal `metric_types.unit` (the canonical unit) or a unit registered in `unit_conversions` for that metric (Core then converts and records the original in `source_metadata.original_value/original_unit`). Unknown unit → reject (`UNIT_MISMATCH`). **[Open Q1]** canonical unit for `bandwidth_util` (currently `%`; rules use Mbps).
+**Unit normalization** — *connectors convert, Core validates.* The contract’s `unit` must equal `metric_types.unit` (the canonical unit) or a unit registered in `unit_conversions` for that metric (Core then converts and records the original in `source_metadata.original_value/original_unit`). Unknown unit → reject (`UNIT_MISMATCH`). For the current runtime, `bandwidth_util` is canonical `%`; its alert thresholds are provisional utilization percentages because the model has no per-link capacity for Mbps conversion.
 
 **Timestamp normalization** — `observed_at` must be RFC 3339 UTC with `Z` (fractional seconds allowed). Offsets other than `Z` are rejected, not silently converted (the existing KPI parser, `dashboard_core_pg.parse_utc_timestamp`, applies the same strictness to query parameters). Future tolerance: `observed_at ≤ received_at + 5 min` (the rule already used by `POST /events`, `FUTURE_TOLERANCE`). Core never overwrites `observed_at`.
 
@@ -184,7 +184,7 @@ Canonical unit = `metric_types.unit` **[Existing]**. Current seed values [Verifi
 | `power_kw` | `kW` | |
 | `cpu_load` | `%` | |
 | `packet_loss` | `%` | |
-| `bandwidth_util` | `%` | **conflicts with Mbps thresholds** (F-05) **[Open Q1]** |
+| `bandwidth_util` | `%` | Alert thresholds currently use provisional utilization percentages (80% warning, 90% critical mean); no per-link capacity is stored for Mbps conversion. |
 | `smoke_level` | `%/m` | |
 | `camera_fps` | `fps` | |
 

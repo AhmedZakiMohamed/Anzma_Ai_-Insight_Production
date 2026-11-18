@@ -672,7 +672,7 @@ The 16 rule IDs in `alert_config.RULES` (verified), with the proposed `alert_rul
 | `HVAC_FILTER_FAULT` | THRESHOLD | WARNING | `HVAC_FILTER` | `MANUAL` (no recovery event exists) |
 | `NET_LINK_DOWN` | THRESHOLD | CRITICAL | `NET_LINK_DOWN` | `RECOVERY_EVENT` (`LINK_UP`) |
 | `NET_LINK_FLAPPING` | THRESHOLD | CRITICAL (3 or more downs in 30 min) | `NET_FLAPPING` | `CONDITION_CLEARED` |
-| `NET_BANDWIDTH_HIGH` | THRESHOLD | WARNING above 900 Mbps for 3 readings; CRITICAL if mean 980 or more | `NET_BANDWIDTH` | `CONDITION_CLEARED` |
+| `NET_BANDWIDTH_HIGH` | THRESHOLD | WARNING above 80% for 3 readings; CRITICAL if mean is 90% or more (provisional utilization limits) | `NET_BANDWIDTH` | `CONDITION_CLEARED` |
 | `NET_PACKET_LOSS` | THRESHOLD | WARNING above 1% for 3 readings; CRITICAL if mean 3% or more | `NET_LOSS` | `CONDITION_CLEARED` |
 | `NET_BANDWIDTH_ANOMALY` | ANOMALY | WARNING | `NET_ANOMALY` | `CONDITION_CLEARED` |
 | `ACC_DOOR_FORCED` | THRESHOLD | CRITICAL | `DOOR_FORCED` | `MANUAL` |
@@ -695,7 +695,7 @@ The 20 event types found across the repository's generators, seed scripts and en
 | `TEMPERATURE_READING` | HVAC generator, engine, KPI | telemetry `temperature_c` | `setpoint`, `fan_on`, `humidity` in `details` become metrics (`setpoint_c`, `fan_on` boolean, `humidity_pct`) |
 | `HIGH_TEMPERATURE` | HVAC generator, engine, KPI | `ALARM`/`FAULT` event **and** telemetry sample (D6) | Counted as a fault in `FAULT_TYPES` |
 | `FILTER_FAULT` | HVAC | `FAULT` event | |
-| `BANDWIDTH_USAGE` | network generator, engine, KPI | telemetry `bandwidth_mbps` | `details.packet_loss_pct` becomes telemetry `packet_loss_pct` at the same timestamp |
+| `BANDWIDTH_USAGE` | network generator, engine, KPI | telemetry `bandwidth_util` (%) | `details.packet_loss_pct` becomes telemetry `packet_loss_pct` at the same timestamp |
 | `UPTIME_REPORT` | network generator (hourly) | telemetry `uptime_s` | Not used by any rule or KPI today |
 | `LINK_DOWN` | network | `FAULT` event (opener) | |
 | `LINK_UP` | network | `RECOVERY` event, resolves `LINK_DOWN` | `downtime_sec` in `details` |

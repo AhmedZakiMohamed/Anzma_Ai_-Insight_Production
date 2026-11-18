@@ -83,6 +83,21 @@ ALERTS = run_rules(CTX)
 HIGH = next(a for a in ALERTS if a["rule_id"] == "HVAC_HIGH_TEMP")
 
 
+def make_network_events(values, packet_loss=None, start=None, step_min=15):
+    start = start or START
+    asset = {"id": 2, "name": "Core Switch 1", "system_type": "NETWORK", "location_id": 1,
+             "zone": "Server Room"}
+    loss_values = packet_loss or [0.0] * len(values)
+    events = []
+    for i, (value, loss) in enumerate(zip(values, loss_values)):
+        events.append({"id": 1000 + i, "asset_id": asset["id"],
+                       "ts": start + timedelta(minutes=step_min * i), "event_type": "BANDWIDTH_USAGE",
+                       "severity": "INFO", "value": value, "unit": "%",
+                       "details": {"packet_loss_pct": loss}})
+    return {"assets": {asset["id"]: asset}, "ev": {asset["id"]: events},
+            "end": events[-1]["ts"] if events else start}
+
+
 # ------------------------------------------------------------------ 1. integrity rules
 @test("integrity: every event type the generator/scenarios emit is valid for its system")
 def _():
@@ -103,7 +118,52 @@ def _():
     assert ir.check_event("CCTV", "DOOR_FORCED")
     assert ir.check_event("FIRE_ALARM", "LINK_DOWN")
     assert ir.check_event("HVAC", "TEMPERATURE_READING", unit="Mbps")      # wrong unit
+    assert ir.check_event("NETWORK", "BANDWIDTH_USAGE", unit="%") == []
+    assert ir.check_event("NETWORK", "BANDWIDTH_USAGE", unit="Mbps")
     assert ir.check_event("PUMP", "TEMPERATURE_READING")                    # unknown system
+
+
+@test("bandwidth: percentage thresholds raise warning above 80%, critical at 90% mean, and no alert below")
+def _():
+    below = alert_engine.rule_net_bandwidth(make_network_events([72.0, 73.0, 74.0]))
+    warning = alert_engine.rule_net_bandwidth(make_network_events([82.0, 85.0, 88.0]))
+    critical = alert_engine.rule_net_bandwidth(make_network_events([91.0, 93.0, 95.0]))
+    assert not any(a["rule_id"] == "NET_BANDWIDTH_HIGH" for a in below)
+    w = next(a for a in warning if a["rule_id"] == "NET_BANDWIDTH_HIGH")
+    c = next(a for a in critical if a["rule_id"] == "NET_BANDWIDTH_HIGH")
+    assert w["severity"] == "WARNING" and c["severity"] == "CRITICAL"
+    assert w["evidence"]["thresholds"] == {"warn_pct": 80.0, "crit_mean_pct": 90.0, "unit": "%"}
+    assert w["evidence"]["facts"]["mean_pct"] == 85.0
+    assert w["evidence"]["facts"]["peak_pct"] == 88.0
+    assert "85.0%" in w["summary"] and "Mbps" not in w["summary"]
+    assert not ({"mean_mbps", "peak_mbps"} & set(w["evidence"]["facts"]))
+
+
+@test("bandwidth: packet-loss playbook uses percent facts for congestion vs link quality")
+def _():
+    high = alert_engine.rule_net_bandwidth(make_network_events([82.0, 85.0, 88.0], [4.0, 4.2, 4.4]))
+    low = alert_engine.rule_net_bandwidth(make_network_events([62.0, 65.0, 68.0], [4.0, 4.2, 4.4]))
+    high_loss = next(a for a in high if a["rule_id"] == "NET_PACKET_LOSS")
+    low_loss = next(a for a in low if a["rule_id"] == "NET_PACKET_LOSS")
+    high_plan, low_plan = recs.recommend(high_loss), recs.recommend(low_loss)
+    assert high_loss["evidence"]["facts"]["bw_mean_pct"] == 85.0
+    assert "bw_mean_mbps" not in high_loss["evidence"]["facts"]
+    assert "CONGESTION" in {c["id"] for c in high_plan["probable_causes"]}
+    assert "LOSS_CONGESTION" in {r["action_id"] for r in high_plan["recommendations"]}
+    assert "mean bandwidth utilization = 85%" in high_plan["recommendations"][0]["basis"][0]
+    assert "LINK_QUALITY" in {c["id"] for c in low_plan["probable_causes"]}
+    assert "LOSS_PHYSICAL" in {r["action_id"] for r in low_plan["recommendations"]}
+
+
+@test("bandwidth anomaly: deviation facts and summary use percent units")
+def _():
+    start = datetime(2026, 11, 5, 6, 0, tzinfo=UTC)
+    values = [50.0] * 30 + [70.0, 72.0, 74.0]
+    ctx = make_network_events(values, start=start, step_min=10)
+    alerts = [a for a in run_rules(ctx) if a["rule_id"] == "NET_BANDWIDTH_ANOMALY"]
+    assert alerts
+    assert alerts[0]["evidence"]["facts"]["unit"] == "%"
+    assert "Mbps" not in alerts[0]["summary"]
 
 
 @test("integrity: alert rules cannot be raised on incompatible equipment")
