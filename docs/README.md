@@ -188,6 +188,8 @@ The v1 ingestion contract, response semantics, API-key lifecycle, and provisioni
 | [`tests/`](../tests/) | Unit, integration, and scenario checks. |
 | [`deploy/compose/`](../deploy/compose/) | Docker image and Compose services. |
 | [`docs/`](../docs/) | Run guide, data model, architecture, and project history. |
+| [`AUTH_OPTIONS.md`](AUTH_OPTIONS.md) | Human decision note comparing source and operator authentication options. |
+| [`TLS_REVERSE_PROXY.md`](TLS_REVERSE_PROXY.md) | Operator guide and untested Caddy/nginx TLS proxy examples. |
 
 ## Project status and limitations
 
