@@ -6,11 +6,13 @@ Run against the running application (nothing is mocked, nothing is written):
 Exit code 0 = all checks passed.
 """
 import json
+import os
 import re
 import sys
 import urllib.request
 
 BASE = (sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8000").rstrip("/")
+API_TOKEN = os.getenv("ANZMA_API_TOKEN", "")
 HOURS = 24
 CJK = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]")
 LABEL = {"HVAC": "HVAC", "NETWORK": "Network", "ACCESS": "Access control", "CCTV": "CCTV", "FIRE_ALARM": "Fire alarm"}
@@ -26,14 +28,16 @@ def check(name, ok, detail=""):
 
 
 def get(path):
-    with urllib.request.urlopen(BASE + path, timeout=30) as r:
+    request = urllib.request.Request(BASE + path, headers={"Authorization": f"Bearer {API_TOKEN}"})
+    with urllib.request.urlopen(request, timeout=30) as r:
         return json.load(r)
 
 
 def ask(message):
     req = urllib.request.Request(BASE + "/chat", data=json.dumps({"message": message, "hours": HOURS,
                                                                   "use_llm": False}).encode(),
-                                 headers={"Content-Type": "application/json"}, method="POST")
+                                 headers={"Content-Type": "application/json",
+                                          "Authorization": f"Bearer {API_TOKEN}"}, method="POST")
     with urllib.request.urlopen(req, timeout=180) as r:
         return json.load(r)
 

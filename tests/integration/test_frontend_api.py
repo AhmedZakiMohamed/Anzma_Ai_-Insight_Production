@@ -37,11 +37,23 @@ for _m in ("003_incidents", "004_chat_views", "005_alert_uniqueness", "006_inges
            "007_event_source_identity", "008_ingestion_contract_conformance"):   # runtime sequence
     DB.execute(sql_file(f"db/migrations/{_m}.sql"))
 
-os.environ.update(PGHOST=HOST, PGPORT=PORT, PGUSER=USER, PGPASSWORD=PASSWORD, PGDATABASE=TEST_DB)
+TEST_USER_TOKEN = "integration-test-user-api-token-not-for-deployment"
+os.environ.update(PGHOST=HOST, PGPORT=PORT, PGUSER=USER, PGPASSWORD=PASSWORD, PGDATABASE=TEST_DB,
+                  ANZMA_API_TOKEN=TEST_USER_TOKEN)
 from fastapi.testclient import TestClient         # noqa: E402
 import app.main as App                                        # noqa: E402
 
-client = TestClient(App.api)
+class UserAuthenticatedTestClient(TestClient):
+    def request(self, method, url, *args, **kwargs):
+        path = str(url).split("?", 1)[0]
+        if not path.startswith("/api/v1/ingest/"):
+            headers = dict(kwargs.pop("headers", {}) or {})
+            headers.setdefault("Authorization", f"Bearer {TEST_USER_TOKEN}")
+            kwargs["headers"] = headers
+        return super().request(method, url, *args, **kwargs)
+
+
+client = UserAuthenticatedTestClient(App.api)
 RESULTS = []
 
 
@@ -54,6 +66,42 @@ def test(name):
 
 def one(sql, *params):
     return DB.execute(sql, params).fetchone()
+
+
+@test("user API auth: missing, invalid, and valid credentials; health remains public")
+def _():
+    anonymous = TestClient(App.api)
+    assert App.authenticator.authenticate("short") is False
+    missing = anonymous.get("/incidents")
+    invalid = anonymous.get("/incidents", headers={"Authorization": "Bearer invalid"})
+    assert missing.status_code == 401 and missing.json()["detail"]["code"] == "AUTH_MISSING"
+    assert invalid.status_code == 401 and invalid.json()["detail"]["code"] == "AUTH_INVALID"
+    old_token = os.environ.pop("ANZMA_API_TOKEN")
+    try:
+        import asyncio
+        try:
+            asyncio.run(App._startup())
+            raise AssertionError("startup accepted a missing API token")
+        except RuntimeError as exc:
+            assert "at least 32 characters" in str(exc)
+    finally:
+        os.environ["ANZMA_API_TOKEN"] = old_token
+    assert anonymous.get("/health").status_code == 200
+    assert anonymous.get("/ready").status_code == 200
+    assert anonymous.get("/dashboard").status_code == 200
+    assert anonymous.get("/docs").status_code == 200
+    assert anonymous.get("/openapi.json").status_code == 200
+    assert client.get("/incidents").status_code == 200
+    session = anonymous.post("/auth/session", headers={"Authorization": f"Bearer {TEST_USER_TOKEN}"})
+    assert session.status_code == 200 and "httponly" in session.headers["set-cookie"].lower()
+    assert anonymous.get("/incidents").status_code == 200
+    assert anonymous.post("/auth/logout").status_code == 200
+    assert anonymous.get("/incidents").status_code == 401
+    # Socket authentication is the same replaceable user authenticator, independent of ingestion keys.
+    assert asyncio.run(App.connect("unit", {}, {"token": TEST_USER_TOKEN})) is True
+    assert asyncio.run(App.connect("unit", {"HTTP_COOKIE": f"anzma_session={TEST_USER_TOKEN}"}, None)) is True
+    assert asyncio.run(App.connect("unit", {}, {"token": "invalid"})) is False
+    assert asyncio.run(App.connect("unit", {}, None)) is False
 
 
 def _ingestion_setup():
