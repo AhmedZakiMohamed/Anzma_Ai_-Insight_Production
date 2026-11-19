@@ -243,6 +243,19 @@ Rejections are audit/control-plane evidence. They are not accepted telemetry/eve
 
 The new data-path examples used controlled synthetic/manual requests; no physical device or vendor connector was connected. The H0 data comparison found one last-digit floating-point difference in `avg_zone_temp`; other dashboard fields matched, and alert/incidents responses were byte-identical. No time fields were ignored. Details and exact hashes are in [`DAY3_MIGRATION_REHEARSAL.md`](DAY3_MIGRATION_REHEARSAL.md).
 
+## 12. Phase 0 closure verification — 19 November 2026
+
+This section records a second migration rehearsal and the release-hardening changes in the uncommitted local worktree based on `8cf0bf22a7652254cae95a506a7b067e25a73e8f`. No committed migration file was edited. The full command/output sequence is in [`DAY3_MIGRATION_REHEARSAL.md`](DAY3_MIGRATION_REHEARSAL.md).
+
+- Restored the supplied H0 PostgreSQL 16 custom dump into the new, isolated `anzma-phase0-closure` project. Its original 13 table counts matched after applying 006–008; there was no migration ledger before restore-upgrade and exactly three ledger entries afterward.
+- All 4,669 historic telemetry rows retained `quality`, `source_id`, and `received_at` as NULL and remained visible in `v_telemetry_valid`; all 955 historic events retained NULL source/receive provenance. No history was backfilled.
+- The schema verifier returned `OVERALL | all OK | OK`, including the partial legacy event index and absence of the old full unique constraint.
+- The supplied pre-migration dashboard, alerts, and incidents snapshots had byte-identical SHA-256 hashes to post-migration responses in the rerun; the numeric comparator returned zero differences for each. No fields or time-dependent values were ignored. The earlier final-digit temperature delta was not reproduced; `AVG(DOUBLE PRECISION)` for 291 window samples returned the exact snapshot value. The tolerance tests still show that a `0.01 C` change fails.
+- A fresh Compose project bound the DB and Ollama host ports to `127.0.0.1`. The required API token was set in a mode-0600 temporary environment file and withheld from output. REST checks passed for missing/invalid/valid bearer credentials, cookie session creation/logout, public liveness/readiness, and the protected API route. Socket.IO rejected missing/invalid credentials and accepted a valid cookie or bearer token.
+- A separate one-record batch submitted through `POST /api/v1/ingest/batches` returned HTTP 200, `ACCEPTED`, and `COMMITTED`; the one-time source key was captured only in process memory and not printed.
+
+The browser's visual login interaction was **NOT TESTED** in a human browser. The HTTP session flow and Socket.IO handshake were exercised directly against the isolated local API. Live Ollama verification is reported separately in the functional report and release checklist.
+
 ## 10. Review Status
 
 **Data and API checks in scope:** PASS as recorded above.  

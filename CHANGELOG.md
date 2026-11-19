@@ -11,6 +11,9 @@ All notable changes to Anzma AI Insight Core are recorded here. This file is mai
 - Separate named automated tests for each of the 16 ingestion contract conformance vectors.
 - Clean-clone Compose deployment and first-batch instructions, configurable host ports, and `/health` / `/ready` verification steps.
 - Functional, migration, deployment, data-validation, and known-issues evidence for Phase 0.
+- Environment-configured bearer authentication for normal REST and Socket.IO access, with an eight-hour HttpOnly browser session cookie; ingestion source-key authentication remains separate.
+- Loopback-only default host bindings for PostgreSQL and Ollama.
+- API snapshot comparison with a documented `1e-12` numeric tolerance and exact comparison for nonnumeric fields.
 
 ### Fixed
 
@@ -19,6 +22,7 @@ All notable changes to Anzma AI Insight Core are recorded here. This file is mai
 - The CRAC recovered-history test now uses an isolated fixture and separately checks active-alert status, removing its test-order assumption.
 - Compose host ports can be changed with `DB_HOST_PORT`, `API_HOST_PORT`, and `OLLAMA_HOST_PORT` to avoid local port collisions.
 - Deployment docs now describe migrations 006–008 for existing volumes, service/readiness checks, and source/key/mapping provisioning.
+- Release hardening adds explicit normal API authentication and limits PostgreSQL/Ollama host publication to loopback unless an operator overrides the bind address.
 
 ### Compatibility
 

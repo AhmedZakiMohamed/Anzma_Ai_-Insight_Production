@@ -414,9 +414,92 @@ The dashboard value is the average zone temperature and differs by about `3e-15`
 
 | Snapshot | Endpoint | Differences |
 |---|---|---:|
-| `dashboard_overview.json` | `GET /dashboard/overview` | 1 numeric serialization/precision delta |
+| `dashboard_overview.json` | `GET /dashboard/overview` | 1 numeric serialization/precision delta in the earlier 19 November capture; see closure rerun below |
 | `alerts.json` | `GET /alerts?limit=50&offset=0` | 0 |
 | `incidents.json` | `GET /incidents` | 0 |
+
+### Phase 0 closure rerun — 19 November 2026
+
+The supplied dump and snapshots were replayed again in the new disposable Compose project `anzma-phase0-closure` (PostgreSQL 16, fresh `anzma-phase0-closure_pgdata`; host DB/API ports `127.0.0.1:15438` and `18007`). The supplied `pg_dump -Fc` archive was restored as `h0_rehearsal`. The pre-migration database had no `schema_migrations` table. `pg_restore` completed successfully; it created the 13 existing tables, 5 existing views, data, indexes, and foreign keys. Exact restore commands:
+
+```sh
+docker cp /Users/test/anzma_backups/anzma_H0_20261118_1956.dump anzma-phase0-closure-db-1:/tmp/h0_rehearsal.dump
+docker exec anzma-phase0-closure-db-1 createdb -U postgres h0_rehearsal
+docker exec anzma-phase0-closure-db-1 pg_restore -v --no-owner --no-privileges -U postgres -d h0_rehearsal /tmp/h0_rehearsal.dump
+```
+
+Pre-migration table counts from the restored database:
+
+```text
+alerts=19
+assets=12
+buildings=2
+event_records=955
+event_type_system_compat=16
+event_types=12
+incidents=15
+locations=6
+metric_type_system_compat=8
+metric_types=8
+scenario_runs=0
+system_types=5
+telemetry_records=4669
+SCHEMA_MIGRATIONS_EXISTS False
+```
+
+`\d event_records` before migration showed the full unique constraint `event_records_asset_id_event_type_id_ts_key` on `(asset_id,event_type_id,ts)`. Migrations were applied and rerun with the repository runner:
+
+```sh
+docker exec -e PGDATABASE=h0_rehearsal anzma-phase0-closure-api-1 python scripts/apply_migrations.py
+```
+
+Observed first run:
+
+```text
+No schema_migrations ledger yet; applying additive migration 006 to create it.
+APPLIED 006_ingestion_foundation
+APPLIED 007_event_source_identity
+APPLIED 008_ingestion_contract_conformance
+```
+
+Observed second run:
+
+```text
+SKIP 006_ingestion_foundation (already recorded)
+SKIP 007_event_source_identity (already recorded)
+SKIP 008_ingestion_contract_conformance (already recorded)
+```
+
+The ledger contained exactly 006, 007, and 008. Every one of the 13 pre-existing table counts above was identical after migration. The 4,669 telemetry rows still had `quality`, `source_id`, and `received_at` NULL; all 4,669 remained in `v_telemetry_valid`. All 955 old events retained NULL `source_id` and `received_at`.
+
+After migration, `\d event_records` showed the old full constraint gone and these relevant indexes present:
+
+```text
+uq_event_legacy_natural_key UNIQUE (asset_id, event_type_id, ts) WHERE source_event_id IS NULL
+uq_event_source_event_id UNIQUE (source_id, source_event_id) WHERE source_id IS NOT NULL AND source_event_id IS NOT NULL
+```
+
+The expanded, read-only `scripts/verify_schema.sql` checked all migration tables, views, introduced columns/indexes/constraints, the mapping trigger/function, and absence of the obsolete full event constraint:
+
+```sh
+docker exec -i anzma-phase0-closure-db-1 psql -U postgres -d h0_rehearsal < scripts/verify_schema.sql
+```
+
+All 15 checks returned `OK`; final row was `OVERALL | all OK | OK`.
+
+### Snapshot calculation and tolerance
+
+The earlier mismatch was not reproduced in this restored-dump rerun. The three post-migration TestClient responses had these byte hashes, exactly matching the supplied pre-migration snapshot files:
+
+```text
+dashboard H0 and post: 4d1afe88f69a06e9f5e160ad77de22fd31d1a0c41a483958e4c24cc63f31c152
+alerts H0 and post:    2b882b4e3b4ecfcc176b62c749ce219ee032cc5a5d3bc83e82e2d19ffad895b6
+incidents H0 and post: 43df1c64294565ad2fdc7141c6a6d40451ab098852ab4df9768421e34ba6c6d7
+```
+
+`scripts/compare_api_snapshots.py` returned `RESULT differences=0 tolerance_only=0` for all three files. No timestamp, field, or other path was ignored. The API's `avg_zone_temp` is PostgreSQL `AVG(value)` over a `DOUBLE PRECISION` column. A read-only SQL query for the dashboard window returned `double precision`, 291 samples, and `17.872061855670097`, matching the snapshot exactly. The prior alternate rendering `17.8720618556701` is only `3.5527136788005009e-15 °C` away; it is covered by the explicit `rel_tol=1e-12`, `abs_tol=1e-12` comparator. That tolerance is far below the stored/display precision; tests also prove a `0.01 °C` change fails. Counts, IDs, timestamps, strings, and all out-of-tolerance values remain exact.
+
+The current runtime cannot serve `/dashboard/overview` on the pre-006 H0 schema because `v_telemetry_valid` is not present until 006. The saved `H0_api_20261118_1959` JSON files are the actual pre-migration API baseline; they were compared against the post-migration responses above. The pre-migration TestClient attempt failed with PostgreSQL `UndefinedTable: relation "v_telemetry_valid" does not exist` and made no database changes.
 
 ## Ingestion and backward-compatibility path
 

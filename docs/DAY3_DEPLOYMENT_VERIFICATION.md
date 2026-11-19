@@ -33,7 +33,7 @@ Bind for 0.0.0.0:5432 failed: port is already allocated
 docker compose --env-file .env -p anzma-item07-clean -f deploy/compose/docker-compose.yml down -v
 ```
 
-The missing documented step was how to select free host ports when another local stack was running. The Compose file now accepts `DB_HOST_PORT`, `API_HOST_PORT`, and `OLLAMA_HOST_PORT`; the safe environment example and both README guides explain the defaults and overrides. The Compose port defaults still bind to all host interfaces; see [`../KNOWN_ISSUES.md`](../KNOWN_ISSUES.md#ki-006).
+The missing documented step was how to select free host ports when another local stack was running. The Compose file now accepts `DB_HOST_PORT`, `API_HOST_PORT`, and `OLLAMA_HOST_PORT`; the safe environment example and both README guides explain the defaults and overrides. At the time of this earlier clean-clone run, Compose published ports on all host interfaces. The Phase 0 closure worktree now binds PostgreSQL and Ollama to loopback by default; API remains published on the configured host port. See [`../KNOWN_ISSUES.md`](../KNOWN_ISSUES.md#ki-006) for current caveats. This earlier run used commit `07bf77e`, before the closure hardening.
 
 Other documentation gaps corrected before the successful run:
 
@@ -172,3 +172,46 @@ POST /api/v1/ingest/batches HTTP 200
 ```
 
 The clean installation proved one authenticated first-batch path. It did not prove a live device connector, production security, backup/restore, or successful LLM inference.
+
+## Phase 0 closure worktree deployment check — 19 November 2026
+
+The current closure code is uncommitted because the instruction explicitly prohibits commits. Therefore it cannot be cloned by branch/commit without first violating that instruction. A fresh local Compose project was built directly from the current worktree on the code base `8cf0bf22a7652254cae95a506a7b067e25a73e8f`; a **clean Git clone of the final closure changes is NOT TESTED**. No existing Compose project or volume was stopped, removed, or reused.
+
+Project `anzma-phase0-closure` created a new `anzma-phase0-closure_pgdata` volume. Host ports were DB 15438, API 18007, and Ollama 11436. Compose's resolved port bindings (the API bearer value was intentionally omitted) were:
+
+```text
+db ports= [('127.0.0.1', '15438', 5432)]
+ollama ports= [('127.0.0.1', '11436', 11434)]
+api ports= [(None, '18007', 8000)]
+api bearer token configured= True
+```
+
+The DB and API containers became healthy. `/health` returned HTTP 200 `{"status":"ok"}` and `/ready` returned HTTP 200 `{"status":"ready","database":"up"}`. Resolved Compose configuration confirmed loopback-only PostgreSQL and Ollama host ports. The unique random API token and DB password were written to a mode-0600 temporary `.env` file; values were never printed.
+
+REST checks against this isolated API returned:
+
+```text
+health 200 {"status":"ok"}
+ready 200 {"status":"ready","database":"up"}
+missing REST auth 401 {"detail":{"code":"AUTH_MISSING",...}}
+invalid REST auth 401 {"detail":{"code":"AUTH_INVALID",...}}
+valid REST auth 200
+session exchange 200; HttpOnly=True; SameSite=Strict
+cookie REST auth 200
+logout 200
+cookie after logout 401
+public static login asset 200
+```
+
+Socket.IO network handshakes rejected missing and invalid credentials and accepted a valid session cookie or bearer token. The browser visual login interaction remains **NOT TESTED**.
+
+The one-time ingestion source key was captured only inside a Python process and was not printed. A manual source `p0-closure-e3a1a68f` mapped external ID `first-device` to `HVAC-AHU-01`, then sent one temperature record (`22.5 C`). The actual response was:
+
+```text
+POST /api/v1/ingest/batches HTTP 200
+batch_id=fa289e9c-a07c-429e-ad95-2ed1144293ac
+status=ACCEPTED transaction=COMMITTED received=1 accepted=1 rejected=0
+record_id=4670 record_type=telemetry outcome=ACCEPTED
+```
+
+The Ollama model pull was started in this project's new `anzma-phase0-closure_ollama_models` volume. It reached 99%, then failed with `Error: Head "https://registry.ollama.ai/v2/library/qwen2.5/blobs/sha256:66b9ea09bd5b7099cbb4fc820f31b575c0366fa439b08245566692c6784e281e": dial tcp 104.18.17.170:443: i/o timeout`; a follow-up `ollama list` showed no installed model. Live model inference is **NOT TESTED**. This verification did not reuse any existing Ollama volume.
