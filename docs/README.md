@@ -192,6 +192,7 @@ The v1 ingestion contract, response semantics, API-key lifecycle, and provisioni
 | [`TLS_REVERSE_PROXY.md`](TLS_REVERSE_PROXY.md) | Operator guide and untested Caddy/nginx TLS proxy examples. |
 | [`BACKUP.md`](BACKUP.md) | Scheduled PostgreSQL backup creation, retention, and verification status. |
 | [`RESTORE_RUNBOOK.md`](RESTORE_RUNBOOK.md) | Scratch restore verification and incident cutover/rollback procedure. |
+| [`SIMULATOR_DESIGN.md`](SIMULATOR_DESIGN.md) | Human decision note for the proposed reference simulator connector. |
 
 ## Project status and limitations
 
