@@ -1,6 +1,6 @@
 # Anzma AI Insight Core — Deployment Standard
 
-**Status:** Proposed deployment standard; current deployment behavior is not fully verified
+**Status:** Local Docker Compose deployment verified on 19 November 2026; customer production deployment remains unverified
 **Scope:** Repeatable Core installation without customer-specific source-code changes
 
 ## 1. Deployment goals
@@ -62,7 +62,7 @@ The current working tree has one bootstrap schema at `db/init/anzma_schema_and_s
 
 - Validate required configuration at startup; errors must not reveal secret values.
 - Liveness reports whether the process runs. Readiness reports whether dependencies required for advertised behavior are available.
-- Current `/health` returns `{"status":"ok"}`; database readiness behavior was not verified.
+- `/health` returns `{"status":"ok"}` for process liveness; `/ready` returns `{"status":"ready","database":"up"}` only while PostgreSQL answers `SELECT 1`.
 - Compose startup order alone does not prove PostgreSQL readiness. Use a readiness check and bounded retry.
 - If Ollama is optional, report model unavailability separately and preserve deterministic fallback.
 - API process health does not prove sensor data is current or equipment is healthy.
@@ -85,20 +85,9 @@ The current working tree has one bootstrap schema at `db/init/anzma_schema_and_s
 - Integrated Ollama/Qwen success remains outstanding until a request through the application succeeds.
 - Measure performance on target deployment hardware; do not infer it from the development laptop.
 
-## 9. Proposed installation sequence
+## 9. Verified local installation sequence
 
-Exact commands must be added after implementation and execution in the target environment.
-
-1. Confirm supported host prerequisites.
-2. Obtain the approved Core artifact and deployment files.
-3. Create protected configuration from the safe example.
-4. Set database, runtime, security, and optional Ollama settings.
-5. Start PostgreSQL and confirm readiness.
-6. Apply migrations and optional seed data for the selected install mode.
-7. Start Core API and dashboard.
-8. Verify liveness and readiness.
-9. Open the dashboard and run documented smoke scenarios.
-10. Record release, migration, configuration profile (without secrets), and actual test results.
+The exact clean-clone run, command output, isolated project, and first batch response are in [`DAY3_DEPLOYMENT_VERIFICATION.md`](DAY3_DEPLOYMENT_VERIFICATION.md). The reproducible sequence is: clone the branch; copy the safe environment example and set the password/free host ports; run Compose; check `ps`, `pg_isready`, `/health`, and `/ready`; provision a source/key and asset mapping with `scripts/ingestion_admin.py`; then send the v1 request in `INGESTION_CONTRACT.md`. Empty volumes apply migrations 003–008 through init scripts. Existing volumes require backup and application of 006–008 with the runner in `DATA_MIGRATION_PLAN.md`.
 
 ## 10. Troubleshooting guide
 

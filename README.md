@@ -120,6 +120,7 @@ The **Alert Center** lists detected alert records that are still open or acknowl
 
 - Docker Desktop or Docker Engine with Compose v2.
 - A local `.env` file with a non-empty PostgreSQL password.
+- The default host ports 5432 (PostgreSQL), 8000 (API), and 11434 (Ollama) must be available, or changed in `.env` before startup.
 
 ### Start
 
@@ -127,11 +128,22 @@ From the repository root:
 
 ```bash
 cp deploy/examples/.env.example .env
-# Edit .env and set PGPASSWORD to a local password.
+# Set PGPASSWORD. Change DB_HOST_PORT, API_HOST_PORT, or OLLAMA_HOST_PORT if needed.
 docker compose --env-file .env -p anzma-insight -f deploy/compose/docker-compose.yml up -d --build
 ```
 
 Open [http://localhost:8000](http://localhost:8000) for the dashboard and [http://localhost:8000/docs](http://localhost:8000/docs) for the API. The explicit `--env-file .env` and `-p anzma-insight` ensure Compose reads the root configuration and targets the same project when you later rebuild a service.
+
+Check service and dependency readiness:
+
+```bash
+docker compose --env-file .env -p anzma-insight -f deploy/compose/docker-compose.yml ps
+docker compose --env-file .env -p anzma-insight -f deploy/compose/docker-compose.yml exec -T db pg_isready -U postgres -d anzma
+curl -i http://localhost:8000/health
+curl -i http://localhost:8000/ready
+```
+
+Expected bodies are `{"status":"ok"}` from `/health` and `{"status":"ready","database":"up"}` from `/ready`. The port variables in `.env` change host ports while container ports remain fixed.
 
 To rebuild only the API after changing application or dashboard files:
 
@@ -139,7 +151,7 @@ To rebuild only the API after changing application or dashboard files:
 docker compose --env-file .env -p anzma-insight -f deploy/compose/docker-compose.yml up -d --build api
 ```
 
-The PostgreSQL initialization scripts run only when the database volume is empty. Existing volumes are not reseeded automatically; apply migration 006 to an existing database with the documented runner in [`docs/DATA_MIGRATION_PLAN.md`](docs/DATA_MIGRATION_PLAN.md). Avoid `down -v` for routine restarts: it deletes the local PostgreSQL data and downloaded Ollama models. Compose services and initialization mounts are defined in [`deploy/compose/docker-compose.yml`](deploy/compose/docker-compose.yml).
+The PostgreSQL initialization scripts run only when the database volume is empty. Existing volumes are not reseeded automatically; apply migrations 006–008 to an existing database with the documented runner in [`docs/DATA_MIGRATION_PLAN.md`](docs/DATA_MIGRATION_PLAN.md). Avoid `down -v` for routine restarts: it deletes the local PostgreSQL data and downloaded Ollama models. Compose publishes PostgreSQL and Ollama host ports by default; neither surface is authenticated. Restrict network access or use host firewall rules for local-only deployments. Compose services and initialization mounts are defined in [`deploy/compose/docker-compose.yml`](deploy/compose/docker-compose.yml).
 
 If Ollama or its model is unavailable, database-backed dashboard features continue to work and explanations can use the deterministic fallback. The AI runtime is optional for normal dashboard operation.
 

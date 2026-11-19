@@ -653,6 +653,62 @@ Each record is validated in this order; the first failure rejects it.
 
 **Context.** The existing API, Socket.IO and database port currently have no authentication (ISS-015). Ingestion must be the first protected surface even if the rest is not yet.
 
+### 11.1 Provision a source and send the first batch
+
+Run these from the repository root. Replace the example project name and host API port with the values used for the deployment. First inspect the fresh seed's buildings and assets, then use a building ID and asset code from those query results:
+
+```sh
+docker compose --env-file .env -p anzma-insight -f deploy/compose/docker-compose.yml \
+  exec -T db psql -U postgres -d anzma -c 'SELECT building_id,name FROM buildings ORDER BY building_id;'
+docker compose --env-file .env -p anzma-insight -f deploy/compose/docker-compose.yml \
+  exec -T db psql -U postgres -d anzma -c 'SELECT asset_code,name FROM assets ORDER BY asset_id LIMIT 12;'
+```
+
+Assign an external-safe building code, create a source and one-time key, then map an external asset ID to an asset in that source's building:
+
+```sh
+docker compose --env-file .env -p anzma-insight -f deploy/compose/docker-compose.yml \
+  exec -T api python scripts/ingestion_admin.py register-building \
+  --building-id BUILDING_ID --building-code SITE-A
+docker compose --env-file .env -p anzma-insight -f deploy/compose/docker-compose.yml \
+  exec -T api python scripts/ingestion_admin.py create-source \
+  --source-code demo-source --building-code SITE-A --connector-name demo --connector-version 1
+docker compose --env-file .env -p anzma-insight -f deploy/compose/docker-compose.yml \
+  exec -T api python scripts/ingestion_admin.py map-asset \
+  --source-code demo-source --external-id device-001 --asset-code ASSET_CODE_FROM_QUERY
+```
+
+`create-source` prints the API key once. Copy it directly into a secret manager or a protected shell variable; do not put it in a payload, script file, terminal transcript, or source control. Set `API_URL` to the deployment's API base URL and `API_KEY` to the secret value without echoing it. The following example sends one temperature measurement for the mapped device:
+
+```sh
+API_URL=http://localhost:8000
+read -r -s -p 'API key: ' API_KEY; printf '\n'
+OBSERVED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+BATCH_ID=$(python3 -c 'import uuid; print(uuid.uuid4())')
+curl -sS -i -X POST "$API_URL/api/v1/ingest/batches" \
+  -H "Authorization: Bearer $API_KEY" -H 'Content-Type: application/json' \
+  --data-binary @- <<JSON
+{
+  "contract_version": "1.0",
+  "batch_id": "$BATCH_ID",
+  "sent_at": "$OBSERVED_AT",
+  "source": {"source_code": "demo-source", "connector": {"name": "demo", "version": "1"}},
+  "building_code": "SITE-A",
+  "records": [{
+    "record_type": "telemetry",
+    "asset": {"external_id": "device-001"},
+    "observed_at": "$OBSERVED_AT",
+    "metric_code": "temperature",
+    "value": 22.5,
+    "unit": "C"
+  }]
+}
+JSON
+unset API_KEY
+```
+
+An accepted first record returns `200`, `status: ACCEPTED`, and `transaction: COMMITTED`. Retain the `batch_id` for retry and audit lookup. For a non-default host port, use that port in `API_URL`; container-to-container clients continue to use the service's internal port.
+
 ---
 
 ## 12. Responses
