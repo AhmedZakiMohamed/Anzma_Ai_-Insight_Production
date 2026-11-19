@@ -35,6 +35,7 @@ The reviewed application reads `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPA
 | AI provider | `CHAT_USE_LLM`, `OLLAMA_HOST`, `OLLAMA_MODEL`, `OLLAMA_TIMEOUT` | Model may be disabled; outage must not disable deterministic fallback |
 | Runtime | `DETECT_INTERVAL`, `ALERT_POLL_INTERVAL`, log level | Validate values and bounds at startup |
 | API security | `ANZMA_API_TOKEN` bearer secret for REST/Socket.IO; HttpOnly browser session cookie | Shared deployment identity only; deploy behind HTTPS and set `ANZMA_COOKIE_SECURE=true`; per-user identity/RBAC remains open |
+| Ingestion rate limit | `ANZMA_INGEST_RATE_LIMIT_PER_MIN` (60) and `ANZMA_INGEST_RATE_LIMIT_BURST` (10) | Per credential, in-memory per API process; invalid or nonpositive values fall back to defaults with a warning |
 
 Defaults differ across reviewed modules, and Compose does not pass every runtime setting consistently. The implementation must establish one settings source, consistent defaults, and explicit validation.
 

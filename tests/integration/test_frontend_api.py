@@ -39,9 +39,11 @@ for _m in ("003_incidents", "004_chat_views", "005_alert_uniqueness", "006_inges
 
 TEST_USER_TOKEN = "integration-test-user-api-token-not-for-deployment"
 os.environ.update(PGHOST=HOST, PGPORT=PORT, PGUSER=USER, PGPASSWORD=PASSWORD, PGDATABASE=TEST_DB,
-                  ANZMA_API_TOKEN=TEST_USER_TOKEN)
+                  ANZMA_API_TOKEN=TEST_USER_TOKEN,
+                  ANZMA_INGEST_RATE_LIMIT_PER_MIN="100000", ANZMA_INGEST_RATE_LIMIT_BURST="100000")
 from fastapi.testclient import TestClient         # noqa: E402
 import app.main as App                                        # noqa: E402
+from app.services.rate_limit import InMemoryTokenBucket, RateLimitSettings  # noqa: E402
 
 class UserAuthenticatedTestClient(TestClient):
     def request(self, method, url, *args, **kwargs):
@@ -889,6 +891,83 @@ def _():
 
     other_route = client.get("/dashboard/overview", params={"hours": "not-an-integer"})
     assert other_route.status_code == 422 and "detail" in other_route.json() and "error" not in other_route.json()
+
+
+@test("ingestion rate limit: auth-scoped buckets, retry without batch consumption, and no rejected writes")
+def _():
+    class FakeClock:
+        now = 1000.0
+
+        def __call__(self):
+            return self.now
+
+    clock = FakeClock()
+    prior_limiter = App.rate_limit.ingestion_rate_limiter
+    App.rate_limit.ingestion_rate_limiter = InMemoryTokenBucket(
+        RateLimitSettings(per_minute=1, burst=1), clock=clock)
+    try:
+        asset1, metric1, building1, source1, token1 = _ingestion_setup()
+        asset2, metric2, building2, source2, token2 = _ingestion_setup()
+
+        def payload(source_code, building_code, connector, metric, asset, stamp, batch_id):
+            return {"contract_version": "1.0", "batch_id": batch_id,
+                    "sent_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+                    "source": {"source_code": source_code,
+                               "connector": {"name": connector, "version": "1"}},
+                    "building_code": building_code, "records": [{
+                        "record_type": "telemetry", "asset": {"asset_code": asset["asset_code"]},
+                        "observed_at": stamp, "metric_code": metric["name"], "value": 16.0,
+                        "unit": metric["unit"]}]}
+
+        def stamp(minutes):
+            return (datetime.now(timezone.utc) - timedelta(hours=3, minutes=minutes)).replace(
+                microsecond=0).isoformat().replace("+00:00", "Z")
+
+        batch_id1 = str(uuid.uuid4())
+        first = payload(source1, building1, "limit-source-1", metric1, asset1, stamp(1), batch_id1)
+        under_limit = client.post("/api/v1/ingest/batches", json=first,
+                                  headers={"Authorization": f"Bearer {token1}"})
+        assert under_limit.status_code == 200 and under_limit.json()["counts"]["accepted"] == 1
+
+        retry_id = str(uuid.uuid4())
+        retry_body = payload(source1, building1, "limit-source-1", metric1, asset1, stamp(2), retry_id)
+        counts_sql = """SELECT (SELECT count(*) FROM ingestion_batches) AS batches,
+                               (SELECT count(*) FROM telemetry_records) AS telemetry,
+                               (SELECT count(*) FROM event_records) AS events,
+                               (SELECT count(*) FROM equipment_state_records) AS states"""
+        before_counts = one(counts_sql)
+        before_health = one("""SELECT last_received_at,last_success_at,last_error_at,last_error
+                              FROM data_sources WHERE source_code=%s""", source1)
+        limited = client.post("/api/v1/ingest/batches", json=retry_body,
+                              headers={"Authorization": f"Bearer {token1}"})
+        assert limited.status_code == 429
+        assert limited.headers.get("Retry-After") and int(limited.headers["Retry-After"]) >= 1
+        assert limited.json() == {"error": {"code": "RATE_LIMITED",
+                                            "message": "Ingestion rate limit exceeded; retry after the indicated delay.",
+                                            "retryable": True}}
+        assert one(counts_sql) == before_counts
+        assert one("SELECT count(*) AS n FROM ingestion_batches WHERE batch_id=%s", retry_id)["n"] == 0
+        assert one("""SELECT last_received_at,last_success_at,last_error_at,last_error
+                      FROM data_sources WHERE source_code=%s""", source1) == before_health
+
+        # A validly shaped but incorrect secret is authenticated before any bucket is consumed.
+        bad_token = token2[:-1] + ("A" if token2[-1] != "A" else "B")
+        second_id = str(uuid.uuid4())
+        second_body = payload(source2, building2, "limit-source-2", metric2, asset2, stamp(3), second_id)
+        rejected_key = client.post("/api/v1/ingest/batches", json=second_body,
+                                   headers={"Authorization": f"Bearer {bad_token}"})
+        assert rejected_key.status_code == 401 and rejected_key.json()["error"]["code"] == "AUTH_INVALID"
+        second_source = client.post("/api/v1/ingest/batches", json=second_body,
+                                    headers={"Authorization": f"Bearer {token2}"})
+        assert second_source.status_code == 200 and second_source.json()["counts"]["accepted"] == 1
+
+        clock.now += 60.0
+        retried = client.post("/api/v1/ingest/batches", json=retry_body,
+                              headers={"Authorization": f"Bearer {token1}"})
+        assert retried.status_code == 200 and retried.json()["counts"]["accepted"] == 1
+        assert retried.json()["batch_id"] == retry_id
+    finally:
+        App.rate_limit.ingestion_rate_limiter = prior_limiter
 
 
 if __name__ == "__main__":

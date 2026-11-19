@@ -39,6 +39,7 @@ from app.domain.evidence import evidence as evd
 from app.domain.incidents import incident_engine as inc
 from app.services import pipeline
 from app.services import ingestion
+from app.services import rate_limit
 from app.security import authenticator, socket_authenticate, token_from_authorization
 
 
@@ -386,8 +387,8 @@ def _ingestion_schema_ready(cur):
     return row["sources"] is not None and row["unmapped"] is not None
 
 
-def _ingestion_error_response(exc: ingestion.IngestionError):
-    return JSONResponse(status_code=exc.status, content=exc.response(exc.batch_id))
+def _ingestion_error_response(exc: ingestion.IngestionError, headers: dict[str, str] | None = None):
+    return JSONResponse(status_code=exc.status, content=exc.response(exc.batch_id), headers=headers)
 
 
 @api.exception_handler(RequestValidationError)
@@ -437,6 +438,14 @@ def ingest_batch(body: IngestionBatch, request: Request,
                                                    "Apply database migrations 006–008 before using Core ingestion.",
                                                    retryable=False, batch_id=batch_id)
                 source = ingestion.authenticate(cur, authorization)
+                conn.commit()  # preserve successful credential use independently of later request admission
+                key_prefix = ingestion.parse_key_prefix((authorization or "")[7:].strip())
+                retry_after = rate_limit.ingestion_rate_limiter.retry_after(key_prefix or "")
+                if retry_after is not None:
+                    limited = ingestion.IngestionError(
+                        429, "RATE_LIMITED", "Ingestion rate limit exceeded; retry after the indicated delay.",
+                        retryable=True)
+                    return _ingestion_error_response(limited, headers={"Retry-After": str(retry_after)})
                 try:
                     result, replay = ingestion.process_batch(
                         cur, source, body.model_dump(mode="json"), datetime.now(timezone.utc))

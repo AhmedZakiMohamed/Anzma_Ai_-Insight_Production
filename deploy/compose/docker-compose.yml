@@ -78,6 +78,8 @@ services:
       OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-120}
       ANZMA_API_TOKEN: ${ANZMA_API_TOKEN:?Set ANZMA_API_TOKEN in .env}
       ANZMA_COOKIE_SECURE: ${ANZMA_COOKIE_SECURE:-false}
+      ANZMA_INGEST_RATE_LIMIT_PER_MIN: ${ANZMA_INGEST_RATE_LIMIT_PER_MIN:-60}
+      ANZMA_INGEST_RATE_LIMIT_BURST: ${ANZMA_INGEST_RATE_LIMIT_BURST:-10}
     # Only the DB is a hard dependency. The app falls back gracefully when
     # Ollama is down or the model is still downloading.
     depends_on:

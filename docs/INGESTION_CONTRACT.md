@@ -631,10 +631,13 @@ Each record is validated in this order; the first failure rejects it.
 | 403 | `SOURCE_MISMATCH`, `SOURCE_DISABLED` | No |
 | 409 | `BATCH_ID_REUSED` | No — use a new `batch_id` |
 | 413 | `BATCH_TOO_LARGE` | No — split the batch |
+| 429 | `RATE_LIMITED` | Yes — honour `Retry-After` |
 | 422 | `UNSUPPORTED_CONTRACT_VERSION`, `UNKNOWN_BUILDING`, all records rejected | No — envelope errors need correction; rejected records are audited |
 | 503 | `INGESTION_SCHEMA_NOT_APPLIED`, `SERVICE_UNAVAILABLE` | Retry same batch after migration or transient database recovery |
 
 **Request-model validation on `/api/v1/ingest/*`:** missing or malformed Authorization key shape returns `401 AUTH_INVALID`; a key-shaped header returns `422 SCHEMA_INVALID` with the first field path and no submitted values. Other routes retain FastAPI's default validation response.
+
+Ingestion POSTs use a per-source-credential token bucket, applied only after successful authentication. `ANZMA_INGEST_RATE_LIMIT_PER_MIN` sets the refill rate (default 60 tokens per minute); `ANZMA_INGEST_RATE_LIMIT_BURST` sets bucket capacity (default 10 tokens). The current limiter is in-memory and per API process; multi-process deployments have independent buckets until a shared store is introduced. A rejected request returns `429 RATE_LIMITED` with an integer `Retry-After` value.
 
 ---
 
