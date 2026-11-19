@@ -477,13 +477,203 @@ def _():
     assert alert.status_code == 201, alert.text
 
 
-@test("contract §13.3: all 16 conformance vectors plus 0.4 validation, audit, and quality semantics")
+_CV = {}
+
+
+def _cv_prepare():
+    asset, metric, building_code, source_code, token = _ingestion_setup()
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    z = lambda value: value.isoformat().replace("+00:00", "Z")
+    _CV.update(asset=asset, metric=metric, building_code=building_code, source_code=source_code,
+               token=token, auth={"Authorization": f"Bearer {token}"}, now=now, z=z,
+               base_ts=z(now - timedelta(days=5)))
+    return _CV
+
+
+def _cv_batch(records, **extra):
+    c = _CV
+    return {"contract_version": "1.0", "batch_id": str(uuid.uuid4()), "sent_at": c["z"](c["now"]),
+            "source": {"source_code": c["source_code"],
+                       "connector": {"name": "conformance", "version": "1"}},
+            "building_code": c["building_code"], "records": records, **extra}
+
+
+def _cv_telemetry(ts, value=15.0, **extra):
+    c = _CV
+    return {"record_type": "telemetry", "asset": {"asset_code": c["asset"]["asset_code"]},
+            "observed_at": ts, "metric_code": c["metric"]["name"], "value": value,
+            "unit": c["metric"]["unit"], **extra}
+
+
+def _cv_post(records, **extra):
+    payload = _cv_batch(records, **extra)
+    return payload, client.post("/api/v1/ingest/batches", json=payload, headers=_CV["auth"])
+
+
+@test("Vector 1: valid envelope accepts three records")
+def _():
+    c = _cv_prepare()
+    t1 = c["z"](c["now"] - timedelta(days=4))
+    records = [_cv_telemetry(t1),
+               {"record_type": "event", "asset": {"asset_code": c["asset"]["asset_code"]},
+                "observed_at": t1, "source_event_id": "cv-event-1", "event_type": "hvac_fault"},
+               {"record_type": "state", "asset": {"asset_code": c["asset"]["asset_code"]},
+                "observed_at": t1, "reported_state": "RUNNING"}]
+    payload = _cv_batch(records, delivery_mode="BACKFILL")
+    response = client.post("/api/v1/ingest/batches", json=payload, headers=c["auth"])
+    assert response.status_code == 200 and response.json()["status"] == "ACCEPTED"
+    assert response.json()["counts"]["accepted"] == 3
+    assert one("SELECT delivery_mode,connector_status FROM ingestion_batches WHERE batch_id=%s",
+               payload["batch_id"]) == {"delivery_mode": "BACKFILL", "connector_status": None}
+    c.update(t1=t1, three=records, p1=payload)
+
+
+@test("Vector 2: exact batch replay returns stored result")
+def _():
+    c = _CV
+    first = client.post("/api/v1/ingest/batches", json=c["p1"], headers=c["auth"])
+    replay = client.post("/api/v1/ingest/batches", json=c["p1"], headers=c["auth"])
+    assert first.status_code == 200 and replay.status_code == 200
+    assert replay.headers.get("Idempotent-Replay") == "true"
+    assert replay.json() == first.json()
+
+
+@test("Vector 3: changed payload reusing batch_id returns 409 BATCH_ID_REUSED")
+def _():
+    c = _CV
+    changed = {**c["p1"], "records": [*c["three"][:-1],
+               {**c["three"][-1], "reported_state": "STOPPED"}]}
+    response = client.post("/api/v1/ingest/batches", json=changed, headers=c["auth"])
+    assert response.status_code == 409 and response.json()["error"]["code"] == "BATCH_ID_REUSED"
+
+
+@test("Vector 4: same telemetry key and value in a new batch is a duplicate")
+def _():
+    c = _CV
+    _, response = _cv_post([_cv_telemetry(c["t1"])])
+    assert response.status_code == 200 and response.json()["counts"]["duplicate"] == 1
+
+
+@test("Vector 5: conflicting telemetry preserves the first value")
+def _():
+    c = _CV
+    _, response = _cv_post([_cv_telemetry(c["t1"], value=17.0)])
+    assert response.status_code == 422 and response.json()["results"][0]["reason_code"] == "CONFLICT"
+    stored = one("SELECT value FROM telemetry_records WHERE asset_id=%s AND metric_id=(SELECT metric_id FROM metric_types WHERE name=%s) AND ts=%s",
+                 c["asset"]["asset_id"], c["metric"]["name"], datetime.fromisoformat(c["t1"].replace("Z", "+00:00")))
+    assert stored["value"] == 15.0
+
+
+@test("Vector 6: timestamp with a non-UTC offset is INVALID_TIMESTAMP")
+def _():
+    _, response = _cv_post([_cv_telemetry("2026-11-15T11:15:00+02:00")])
+    assert response.status_code == 422 and response.json()["results"][0]["reason_code"] == "INVALID_TIMESTAMP"
+
+
+@test("Vector 7: timestamp ten minutes in the future is FUTURE_TIMESTAMP")
+def _():
+    c = _CV
+    ts = c["z"](datetime.now(timezone.utc) + timedelta(minutes=10))
+    _, response = _cv_post([_cv_telemetry(ts)])
+    assert response.status_code == 422 and response.json()["results"][0]["reason_code"] == "FUTURE_TIMESTAMP"
+
+
+@test("Vector 8: door_forced on a camera is EVENT_NOT_COMPATIBLE")
+def _():
+    c = _CV
+    camera = one("""SELECT a.asset_code FROM assets a JOIN system_types st USING(system_type_id)
+                    WHERE st.code='CCTV' ORDER BY a.asset_id LIMIT 1""")
+    record = {"record_type": "event", "asset": {"asset_code": camera["asset_code"]},
+              "observed_at": c["base_ts"], "source_event_id": "cv-door-for-camera", "event_type": "door_forced"}
+    _, response = _cv_post([record])
+    assert response.status_code == 422 and response.json()["results"][0]["reason_code"] == "EVENT_NOT_COMPATIBLE"
+
+
+@test("Vector 9: Fahrenheit telemetry is rejected with UNIT_MISMATCH")
+def _():
+    c = _CV
+    _, response = _cv_post([_cv_telemetry(c["z"](c["now"] - timedelta(days=3)), unit="F")])
+    assert response.status_code == 422 and response.json()["results"][0]["reason_code"] == "UNIT_MISMATCH"
+
+
+@test("Vector 10: unmapped external ID is rejected and audited")
+def _():
+    c = _CV
+    external_id = "vendor-unmapped-" + uuid.uuid4().hex
+    record = {**_cv_telemetry(c["z"](c["now"] - timedelta(days=2))), "asset": {"external_id": external_id}}
+    _, response = _cv_post([record])
+    assert response.status_code == 422 and response.json()["results"][0]["reason_code"] == "ASSET_UNRESOLVED"
+    rejected = one("SELECT source_id,external_id FROM ingestion_rejections WHERE external_id=%s", external_id)
+    assert rejected and rejected["external_id"] == external_id
+    view = one("SELECT count,first_seen,last_seen FROM v_unmapped_external_assets WHERE source=%s AND external_id=%s",
+               c["source_code"], external_id)
+    assert view and view["count"] == 1 and view["first_seen"]
+
+
+@test("Vector 11: quality MISSING is SCHEMA_INVALID")
+def _():
+    c = _CV
+    record = {**_cv_telemetry(c["z"](c["now"] - timedelta(days=1))), "quality": "MISSING"}
+    _, response = _cv_post([record])
+    assert response.status_code == 422 and response.json()["results"][0]["reason_code"] == "SCHEMA_INVALID"
+
+
+@test("Vector 12: state with only communication_status is SCHEMA_INVALID")
+def _():
+    c = _CV
+    record = {"record_type": "state", "asset": {"asset_code": c["asset"]["asset_code"]},
+              "observed_at": c["base_ts"], "communication_status": "OFFLINE"}
+    _, response = _cv_post([record])
+    assert response.status_code == 422 and response.json()["results"][0]["reason_code"] == "SCHEMA_INVALID"
+
+
+@test("Vector 13: 1000 records with ten invalid records return PARTIAL")
+def _():
+    c = _CV
+    start = c["now"] - timedelta(days=30)
+    records = []
+    for i in range(1000):
+        record = _cv_telemetry(c["z"](start + timedelta(seconds=i)), value=100.0 + i)
+        if i % 100 == 0:
+            record["unit"] = "not-a-unit"
+        records.append(record)
+    _, response = _cv_post(records)
+    assert response.status_code == 200 and response.json()["status"] == "PARTIAL"
+    assert response.json()["counts"] == {"received": 1000, "accepted": 990, "duplicate": 0, "rejected": 10}
+
+
+@test("Vector 14: 5001 records return 413 BATCH_TOO_LARGE")
+def _():
+    _, response = _cv_post([{} for _ in range(5001)])
+    assert response.status_code == 413 and response.json()["error"]["code"] == "BATCH_TOO_LARGE"
+
+
+@test("Vector 15: wrong source_code for key returns 403 SOURCE_MISMATCH")
+def _():
+    c = _CV
+    payload = _cv_batch([], source={"source_code": "wrong-source",
+                                    "connector": {"name": "conformance", "version": "1"}})
+    response = client.post("/api/v1/ingest/batches", json=payload, headers=c["auth"])
+    assert response.status_code == 403 and response.json()["error"]["code"] == "SOURCE_MISMATCH"
+
+
+@test("Vector 16: empty valid batch returns 200 and updates source liveness")
+def _():
+    c = _CV
+    before = one("SELECT last_received_at FROM data_sources WHERE source_code=%s", c["source_code"])["last_received_at"]
+    payload, response = _cv_post([])
+    after = one("SELECT last_received_at FROM data_sources WHERE source_code=%s", c["source_code"])["last_received_at"]
+    assert response.status_code == 200 and response.json()["status"] == "ACCEPTED"
+    assert after >= before
+    assert one("SELECT delivery_mode FROM ingestion_batches WHERE batch_id=%s", payload["batch_id"])["delivery_mode"] == "LIVE"
+
+
+@test("Step 0.4: auth, scopes, reason codes, back-date, diagnostics, and plausibility")
 def _():
     asset, metric, building_code, source_code, token = _ingestion_setup()
     auth = {"Authorization": f"Bearer {token}"}
     now = datetime.now(timezone.utc).replace(microsecond=0)
     z = lambda value: value.isoformat().replace("+00:00", "Z")
-    base_ts = z(now - timedelta(days=5))
     def batch(records, **extra):
         return {"contract_version": "1.0", "batch_id": str(uuid.uuid4()), "sent_at": z(now),
                 "source": {"source_code": source_code, "connector": {"name": "conformance", "version": "1"}},
@@ -495,92 +685,17 @@ def _():
     def post(records, **extra):
         payload = batch(records, **extra)
         return payload, client.post("/api/v1/ingest/batches", json=payload, headers=auth)
-
-    # 1: valid batch with telemetry, event, and state.
-    t1 = z(now - timedelta(days=4))
-    three = [telemetry(t1),
-             {"record_type": "event", "asset": {"asset_code": asset["asset_code"]},
-              "observed_at": t1, "source_event_id": "cv-event-1", "event_type": "hvac_fault"},
-             {"record_type": "state", "asset": {"asset_code": asset["asset_code"]},
-              "observed_at": t1, "reported_state": "RUNNING"}]
-    p1, r1 = post(three, delivery_mode="BACKFILL")
-    assert r1.status_code == 200 and r1.json()["status"] == "ACCEPTED" and r1.json()["counts"]["accepted"] == 3
-    persisted = one("SELECT delivery_mode,connector_status FROM ingestion_batches WHERE batch_id=%s", p1["batch_id"])
-    assert persisted["delivery_mode"] == "BACKFILL" and persisted["connector_status"] is None
-
-    # 2–5: batch replay, changed-payload reuse, exact record duplicate, immutable conflict.
-    replay = client.post("/api/v1/ingest/batches", json=p1, headers=auth)
-    assert replay.status_code == 200 and replay.headers.get("Idempotent-Replay") == "true"
-    changed = {**p1, "records": [*three[:-1], {**three[-1], "reported_state": "STOPPED"}]}
-    assert client.post("/api/v1/ingest/batches", json=changed, headers=auth).status_code == 409
-    p4, r4 = post([telemetry(t1)])
-    assert r4.status_code == 200 and r4.json()["counts"]["duplicate"] == 1
-    p5, r5 = post([telemetry(t1, value=17.0)])
-    assert r5.status_code == 422 and r5.json()["results"][0]["reason_code"] == "CONFLICT"
-    assert one("SELECT value FROM telemetry_records WHERE asset_id=%s AND metric_id=(SELECT metric_id FROM metric_types WHERE name=%s) AND ts=%s",
-               asset["asset_id"], metric["name"], datetime.fromisoformat(t1.replace("Z", "+00:00")))["value"] == 15.0
-
-    # 6–7: timestamp syntax and future bound.
-    _, r6 = post([telemetry("2026-11-15T11:15:00+02:00")])
-    assert r6.status_code == 422 and r6.json()["results"][0]["reason_code"] == "INVALID_TIMESTAMP"
-    _, r7 = post([telemetry(z(datetime.now(timezone.utc) + timedelta(minutes=10)))])
-    assert r7.status_code == 422 and r7.json()["results"][0]["reason_code"] == "FUTURE_TIMESTAMP"
-
-    # 8–12: incompatible event, unit mismatch, unresolved external ID, invalid quality, invalid state.
-    camera = one("""SELECT a.asset_code FROM assets a JOIN system_types st USING(system_type_id)
-                   WHERE st.code='CCTV' ORDER BY a.asset_id LIMIT 1""")
-    incompatible = {"record_type": "event", "asset": {"asset_code": camera["asset_code"]},
-                    "observed_at": base_ts, "source_event_id": "cv-door-for-camera", "event_type": "door_forced"}
-    _, r8 = post([incompatible])
-    assert r8.status_code == 422 and r8.json()["results"][0]["reason_code"] == "EVENT_NOT_COMPATIBLE"
-    _, r9 = post([telemetry(z(now - timedelta(days=3)), unit="F")])
-    assert r9.status_code == 422 and r9.json()["results"][0]["reason_code"] == "UNIT_MISMATCH"
-    unmapped_id = "vendor-unmapped-" + uuid.uuid4().hex
-    unmapped_record = {**telemetry(z(now - timedelta(days=2))), "asset": {"external_id": unmapped_id}}
-    _, r10 = post([unmapped_record])
-    assert r10.status_code == 422 and r10.json()["results"][0]["reason_code"] == "ASSET_UNRESOLVED"
-    rej = one("SELECT source_id,external_id FROM ingestion_rejections WHERE external_id=%s", unmapped_id)
-    assert rej and rej["external_id"] == unmapped_id
-    unmapped_view = one("SELECT count,first_seen,last_seen FROM v_unmapped_external_assets WHERE source=%s AND external_id=%s",
-                        source_code, unmapped_id)
-    assert unmapped_view and unmapped_view["count"] == 1 and unmapped_view["first_seen"]
-    _, r11 = post([{**telemetry(z(now - timedelta(days=1))), "quality": "MISSING"}])
-    assert r11.status_code == 422 and r11.json()["results"][0]["reason_code"] == "SCHEMA_INVALID"
-    _, r12 = post([{"record_type": "state", "asset": {"asset_code": asset["asset_code"]},
-                    "observed_at": base_ts, "communication_status": "OFFLINE"}])
-    assert r12.status_code == 422 and r12.json()["results"][0]["reason_code"] == "SCHEMA_INVALID"
-
-    # 13: 1000 records, 10 rejected, all accepted records and rejection audit commit together.
-    bulk_records = []
-    bulk_start = now - timedelta(days=30)
-    for i in range(1000):
-        record = telemetry(z(bulk_start + timedelta(seconds=i)), value=100.0 + i)
-        if i % 100 == 0:
-            record["unit"] = "not-a-unit"
-        bulk_records.append(record)
-    p13, r13 = post(bulk_records)
-    assert r13.status_code == 200 and r13.json()["status"] == "PARTIAL"
-    assert r13.json()["counts"] == {"received": 1000, "accepted": 990, "duplicate": 0, "rejected": 10}, r13.text
-
-    # 14–16: size, source mismatch, and keepalive/liveness.
-    _, r14 = post([{} for _ in range(5001)])
-    assert r14.status_code == 413 and r14.json()["error"]["code"] == "BATCH_TOO_LARGE"
-    p15 = batch([], source={"source_code": "wrong-source", "connector": {"name": "conformance", "version": "1"}})
-    r15 = client.post("/api/v1/ingest/batches", json=p15, headers=auth)
-    assert r15.status_code == 403 and r15.json()["error"]["code"] == "SOURCE_MISMATCH"
-    before_live = one("SELECT last_received_at FROM data_sources WHERE source_code=%s", source_code)["last_received_at"]
     p16, r16 = post([])
-    after_live = one("SELECT last_received_at FROM data_sources WHERE source_code=%s", source_code)["last_received_at"]
-    assert r16.status_code == 200 and r16.json()["status"] == "ACCEPTED" and after_live >= before_live
-    assert one("SELECT delivery_mode FROM ingestion_batches WHERE batch_id=%s", p16["batch_id"])["delivery_mode"] == "LIVE"
-
+    event = {"record_type": "event", "asset": {"asset_code": asset["asset_code"]},
+             "observed_at": z(now - timedelta(days=5)), "source_event_id": "step04-event",
+             "event_type": "hvac_fault"}
     # Additional Step 0.4 conformance: auth, scope, code distinctions, time override, delivery diagnostics, quality.
     missing_auth = client.post("/api/v1/ingest/batches", json=p16)
     invalid_auth = client.post("/api/v1/ingest/batches", json=p16, headers={"Authorization": "Bearer invalid"})
     assert missing_auth.status_code == 401 and missing_auth.json()["error"]["code"] == "AUTH_MISSING"
     assert invalid_auth.status_code == 401 and invalid_auth.json()["error"]["code"] == "AUTH_INVALID"
     DB.execute("UPDATE source_credentials SET scopes=ARRAY['ingest:telemetry']::text[] WHERE key_prefix=%s", (token.split("_")[1],))
-    _, scope_response = post([three[1]])
+    _, scope_response = post([event])
     assert scope_response.json()["results"][0]["reason_code"] == "SCOPE_DENIED"
     DB.execute("UPDATE source_credentials SET scopes=ARRAY['ingest:telemetry','ingest:event','ingest:state']::text[] WHERE key_prefix=%s", (token.split("_")[1],))
 
@@ -588,7 +703,7 @@ def _():
     assert unknown_metric.json()["results"][0]["reason_code"] == "UNKNOWN_METRIC"
     _, incompatible_metric = post([{**telemetry(z(now - timedelta(hours=2))), "metric_code": "camera_fps", "unit": "fps"}])
     assert incompatible_metric.json()["results"][0]["reason_code"] == "METRIC_NOT_COMPATIBLE"
-    _, unknown_event = post([{**three[1], "source_event_id": "cv-unknown-event", "event_type": "not_registered"}])
+    _, unknown_event = post([{**event, "source_event_id": "cv-unknown-event", "event_type": "not_registered"}])
     assert unknown_event.json()["results"][0]["reason_code"] == "UNKNOWN_EVENT_TYPE"
 
     other_building_asset = one("""SELECT a.asset_code FROM assets a JOIN locations l USING(location_id)
