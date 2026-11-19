@@ -190,7 +190,8 @@ The v1 ingestion contract, response semantics, API-key lifecycle, and provisioni
 | [`docs/`](../docs/) | Run guide, data model, architecture, and project history. |
 | [`AUTH_OPTIONS.md`](AUTH_OPTIONS.md) | Human decision note comparing source and operator authentication options. |
 | [`TLS_REVERSE_PROXY.md`](TLS_REVERSE_PROXY.md) | Operator guide and untested Caddy/nginx TLS proxy examples. |
-| [`BACKUP.md`](BACKUP.md) | Scheduled PostgreSQL backup creation, retention, and status collection; restore is pending C2. |
+| [`BACKUP.md`](BACKUP.md) | Scheduled PostgreSQL backup creation, retention, and verification status. |
+| [`RESTORE_RUNBOOK.md`](RESTORE_RUNBOOK.md) | Scratch restore verification and incident cutover/rollback procedure. |
 
 ## Project status and limitations
 

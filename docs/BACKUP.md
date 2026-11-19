@@ -2,7 +2,7 @@
 
 `scripts/backup_db.sh` writes a custom-format `pg_dump` archive plus SHA-256 and row-count sidecars. The output directory is protected with mode `700`; backup files use mode `600`. The script verifies each new archive with `pg_restore --list` before publishing it and prunes only old, checksum-valid backups with all expected sidecars.
 
-**These backups are UNVERIFIED for restore.** Restore verification is the next package (C2); do not treat archive listing or a matching checksum as proof that a restore works.
+**One backup has passed restore verification:** `anzma_20261119_145637.dump`; see [`RESTORE_RUNBOOK.md`](RESTORE_RUNBOOK.md) for the recorded scratch run. Other backups remain UNVERIFIED until individually restored and checked. Archive listing and a matching checksum alone do not prove a restore works.
 
 ## Usage and settings
 
@@ -71,4 +71,4 @@ WantedBy=timers.target
 - For systemd, use `systemctl list-timers anzma-backup.timer` and `systemctl status anzma-backup.service`; retrieve the last JSON output with `journalctl -u anzma-backup.service -n 1 --no-pager`.
 - Collect the final stdout JSON line with the scheduler's normal log collector. Successful runs report `BACKUP_OK`; failures report `BACKUP_FAILED`; each pruned set reports `RETENTION_DELETED`. The JSON contains the filename, size, elapsed seconds, and UTC timestamp, never credentials.
 
-Until the C2 restore test is complete and passes, these backups remain **UNVERIFIED for restore**.
+The restore process and its last verified scratch run are recorded in [`RESTORE_RUNBOOK.md`](RESTORE_RUNBOOK.md). A successful check of one archive does not verify other backups.
