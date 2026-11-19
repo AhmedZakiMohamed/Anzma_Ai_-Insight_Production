@@ -105,3 +105,20 @@ Implementation includes the additive migration, runner, provisioning CLI, versio
 ## Deployment handoff
 
 The approved defaults remove the contract decision gate. Release requires isolated post-change regression results and an operator-reviewed deployment of migration 006 to the existing database. No live migration is performed as part of repository implementation.
+
+## Phase 0.1 — clean disposable baseline re-run (19 November 2026)
+
+The baseline was rerun on branch `feature/ingestion-foundation`, HEAD `139be55`, using fresh Compose project `anzma-phase0-20261119`, fresh volume `anzma-phase0-20261119_pgdata`, PostgreSQL 16, and API port 18001. The checkout was clean before this evidence update. The shared `anzma-insight` project and database were not used. The disposable stack started healthy; its fresh volume initialized migrations through 006.
+
+| Suite / command (run in disposable API container) | Result | Evidence |
+|---|---:|---|
+| `python tests/unit/test_day2_ahmed.py` | **28/28 PASS** | All unit checks passed. |
+| `env PGHOST=db PGDATABASE=anzma python tests/integration/test_day2_integration.py` | **43/43 PASS** | Operational intelligence, evidence, incidents and fallback checks passed. |
+| `env PGHOST=db PGDATABASE=anzma python tests/integration/test_data_integrity.py` | **21/21 PASS** | Fresh test DB applied migrations repeatedly; additive/history, source mapping, quality view and existing integrity checks passed. |
+| `env PGHOST=db PGDATABASE=anzma python tests/integration/test_frontend_api.py` | **19/20** | New v1 ingestion and legacy API checks passed. One existing assertion failed: `tests/integration/test_frontend_api.py:227` expects CRAC not critical after the same suite runs `/alerts/run`, which creates a critical CRAC alert. This is NOT marked green or waived; resolution is Phase 0.2. |
+| `python tests/integration/test_chat_consistency.py http://127.0.0.1:8000` | **31/31 PASS** | Read-only chat/dashboard agreement against the clean stack. |
+| `env PYTHONPATH=/app PGHOST=db PGDATABASE=anzma python tests/integration/test_dashboard.py` | **PASS** | Read-only summary returned 12 monitored assets and KPI values. |
+| `env PGHOST=db PGDATABASE=anzma python tests/scenarios/e2e_s1.py --build` | **14/14 PASS** | S1 alert, incident, evidence, grounding and idempotent second detection passed. |
+| `scripts/verify_schema.sql` via the DB adapter on fresh `anzma` | **OVERALL OK** | Expected tables, views, indexes, columns and constraints all passed. |
+
+The failing assertion is consistent with the earlier known baseline and has not been weakened or changed in item 0.1. Test output included the expected S1 CRAC alert as critical, so Phase 0.2 must establish whether order/state leakage or the assertion's post-detection assumption is wrong. The clean run is evidence for item 0.1 only; Phase 0 acceptance is not yet met.
