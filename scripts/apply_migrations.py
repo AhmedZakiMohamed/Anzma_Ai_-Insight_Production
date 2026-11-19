@@ -5,6 +5,7 @@ Reads PostgreSQL connection settings from PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASS
 """
 from __future__ import annotations
 
+import argparse
 import os
 from pathlib import Path
 import sys
@@ -20,6 +21,8 @@ LOCK_KEY = 718230641
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.parse_args()
     conn = da.connect(
         host=os.getenv("PGHOST", "localhost"),
         port=os.getenv("PGPORT", "5432"),
