@@ -1,6 +1,6 @@
 # CONTRACT_TO_DB_MAPPING.md — Anzma AI Insight Core
 
-**Status:** Reconciled with implemented additive migration `006_ingestion_foundation.sql`; the shared existing database has not been migrated. This document itself makes no database changes.
+**Status:** Reconciled with implemented additive migrations `006_ingestion_foundation.sql` and `007_event_source_identity.sql`; the shared existing database has not been migrated. This document itself makes no database changes.
 **Purpose:** show how every field of [`INGESTION_CONTRACT.md`](INGESTION_CONTRACT.md) lands in the **existing** PostgreSQL schema, and list the minimum that must be added. Rule followed: **no parallel data model, no duplicated data** without a stated reason.
 **Basis [Verified]:** `db/init/anzma_schema_and_seed.sql`, `db/migrations/003`–`005`, `app/main.py`, `app/api/*`, `app/repositories/dashboard_core_pg.py` in `Anzma_Ai_Insight_Production`.
 
@@ -35,10 +35,10 @@ What is **not** added on purpose: no new telemetry or event table, no second ass
 | `event_types` | `event_type_id`, `name UNIQUE` (12 types, including `heartbeat`, valid for every system) |
 | `*_system_compat` | PK `(metric_id/event_type_id, system_type_id)` |
 | `telemetry_records` | `telemetry_id`, `asset_id`, `metric_id`, `ts`, `value`, `UNIQUE (asset_id, metric_id, ts)`, finite CHECK |
-| `event_records` | `event_id`, `asset_id`, `event_type_id`, `ts`, `severity` (lowercase `info/warning/critical`), `details JSONB`, `UNIQUE (asset_id, event_type_id, ts)` |
+| `event_records` | Pre-007: full UNIQUE `(asset_id, event_type_id, ts)`. Migration 007 replaces it with a partial unique index on that key WHERE `source_event_id IS NULL`; source rows use UNIQUE `(source_id, source_event_id) WHERE source_event_id IS NOT NULL`. |
 | `alerts`, `incidents` | Operational layer, unrelated to ingestion |
 
-Also verified: no table or column named `source_id`, `external_asset`, `received_at`, `batch_id` or `quality` exists in `db/`, and none of those names is used in `app/` for stored data (the word `quality` appears once in `alert_config.py`, unrelated); `POST /events` is the only write endpoint for facts; the schema comment states the UTC-`Z`, no-future-timestamp and batch rules are enforced "in ingestion code, not here" — and that code does not exist yet.
+Historical pre-006 baseline note: before migrations 006–007, no table or column named `source_id`, `external_asset`, `received_at`, `batch_id` or stored `quality` existed, and `POST /events` was the only write endpoint for facts. The UTC-`Z`, no-future-timestamp and batch rules were not enforced in that baseline. This note describes the prior state; the implemented v1 path is mapped below.
 
 ---
 
@@ -135,7 +135,7 @@ Deliberately **not added now** (in `CANONICAL_DATA_MODEL.md` but not needed by t
 
 ## 5. Implemented identity and uniqueness constraints
 
-Migration 006 leaves the legacy event natural key `(asset_id, event_type_id, ts)` intact and adds a partial unique index on `(source_id, source_event_id)` for non-NULL source IDs. Telemetry keeps `UNIQUE (asset_id, metric_id, ts)`. Batch identity is `UNIQUE (source_id, batch_id)`; the payload hash detects reuse of a batch ID with changed content. The service compares conflicting natural-key records and never updates an accepted fact.
+Migration 006 adds a partial unique index on `(source_id, source_event_id)` for non-NULL source IDs. Migration 007 replaces the legacy full unique constraint with a partial unique index on `(asset_id, event_type_id, ts) WHERE source_event_id IS NULL`; the existing rows remain unchanged. This lets distinct source event IDs coexist at the same asset/type/time while retaining the legacy key. `POST /events` uses the partial key after 007 and falls back to the prior full key when the partial index is absent. Telemetry keeps `UNIQUE (asset_id, metric_id, ts)`. Batch identity is `UNIQUE (source_id, batch_id)`; the payload hash detects reuse of a batch ID with changed content. The service compares conflicting natural-key records and never updates an accepted fact.
 
 `asset_external_ids` has primary key `(source_id, external_id)`. A database trigger verifies each mapped asset belongs to the source's building. A source cannot remap an existing external ID to another asset; provisioning reports a conflict and makes no update.
 
@@ -160,9 +160,9 @@ Accepted measurements/events/state rows, the batch result, and rejection audit c
 
 ## 8. Implemented additive migration and rollout
 
-`db/migrations/006_ingestion_foundation.sql` adds the schema without backfilling or updating historical fact rows. New provenance/quality columns remain NULL on old facts. `v_telemetry_valid` excludes `quality='BAD'` and keeps legacy NULL quality. Existing operational readers were switched to this view; evidence still reads the original telemetry table and record IDs.
+`db/migrations/006_ingestion_foundation.sql` and `007_event_source_identity.sql` add/adjust constraints without backfilling or updating/deleting historical fact rows. New provenance/quality columns remain NULL on old facts. `v_telemetry_valid` excludes `quality='BAD'` and keeps legacy NULL quality. Existing operational readers were switched to this view; evidence still reads the original telemetry table and record IDs.
 
-`deploy/compose/docker-compose.yml` applies 006 only when initializing an empty volume. Existing databases use `scripts/apply_migrations.py`, which applies unapplied 006+ migrations under a PostgreSQL advisory lock and records versions in `schema_migrations`. The exact operator procedure and compatible rollback are documented in `DATA_MIGRATION_PLAN.md`. Migration 006 has not been run against the shared existing database.
+`deploy/compose/docker-compose.yml` applies 006 and 007 only when initializing an empty volume. Existing databases use `scripts/apply_migrations.py`, which applies unapplied 006+ migrations under a PostgreSQL advisory lock and records versions in `schema_migrations`. The exact operator procedure and compatible rollback are documented in `DATA_MIGRATION_PLAN.md`. Migrations 006/007 have not been run against the shared existing database.
 
 ## 9. Risks and open points
 

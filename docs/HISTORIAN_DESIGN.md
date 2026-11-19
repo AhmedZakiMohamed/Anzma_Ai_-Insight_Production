@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Status** | Historian design plus implemented ingestion foundation. Migration 006 adds provenance/quality fields and append-only state facts; freshness/gap tracking, retention, and rollups remain future work. |
-| **Baseline** | PostgreSQL 16; migration 006 is included for fresh volumes and can be applied additively to existing volumes with the documented runner. The shared database was not migrated. |
+| **Status** | Historian design plus implemented ingestion foundation. Migrations 006–007 add provenance/quality fields, append-only state facts, and source-aware event identity; freshness/gap tracking, retention, and rollups remain future work. |
+| **Baseline** | PostgreSQL 16; migrations 006–007 are included for fresh volumes and can be applied additively to existing volumes with the documented runner. The shared database was not migrated. |
 | **Related** | `CANONICAL_DATA_MODEL.md` (entities/columns named here), `DATA_MIGRATION_PLAN.md`, `SPRINT_1_TECHNICAL_ISSUES.md` |
 
 Entities marked *(proposed)* are defined in `CANONICAL_DATA_MODEL.md`. SQL below is **illustrative query design**, not a migration; column names that do not exist today are marked *(proposed)*.

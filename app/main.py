@@ -562,9 +562,14 @@ def create_event(body: EventCreate):
                     raise HTTPException(422, f"Unknown event_type '{name}'.")
                 if not row["allowed"]:
                     raise HTTPException(422, f"event_type '{name}' is not allowed for this asset's system.")
-                cur.execute("""INSERT INTO event_records (asset_id, event_type_id, ts, severity, details)
+                cur.execute("SELECT to_regclass('public.uq_event_legacy_natural_key') IS NOT NULL AS partial_key")
+                has_partial_key = cur.fetchone()["partial_key"]
+                conflict_target = ("ON CONFLICT (asset_id, event_type_id, ts) WHERE source_event_id IS NULL DO NOTHING"
+                                   if has_partial_key else
+                                   "ON CONFLICT (asset_id, event_type_id, ts) DO NOTHING")
+                cur.execute(f"""INSERT INTO event_records (asset_id, event_type_id, ts, severity, details)
                                VALUES (%s,%s,%s,%s,%s)
-                               ON CONFLICT (asset_id, event_type_id, ts) DO NOTHING
+                               {conflict_target}
                                RETURNING event_id""",
                             (body.asset_id, row["event_type_id"], body.ts, body.severity.lower(),
                              da.Json(cur, body.details) if body.details is not None else None))

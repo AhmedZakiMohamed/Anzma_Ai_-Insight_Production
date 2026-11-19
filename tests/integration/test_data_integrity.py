@@ -4,7 +4,7 @@ exist with their columns, that migrations 005/006 constraints hold, and pins the
 CURRENT behaviour of the *_compat tables (not enforced by the database).
 
 Builds a throw-away database (anzma_integrity_test) with the official sequence:
-  db/init/anzma_schema_and_seed.sql -> 003_incidents.sql -> 004_chat_views.sql -> 005_alert_uniqueness.sql -> 006_ingestion_foundation.sql
+  db/init/anzma_schema_and_seed.sql -> 003_incidents.sql -> 004_chat_views.sql -> 005_alert_uniqueness.sql -> 006_ingestion_foundation.sql -> 007_event_source_identity.sql
 (migrations are applied twice to prove idempotency). Never touches any other database.
 
 Run:  python test_data_integrity.py      (needs a reachable PostgreSQL; PGHOST/PGPORT/PGUSER/PGPASSWORD as in the other tests)
@@ -27,7 +27,8 @@ SEQUENCE = [os.path.join(REPO, "db", "init", "anzma_schema_and_seed.sql"),
             os.path.join(ROOT, "db", "migrations", "003_incidents.sql"),
             os.path.join(ROOT, "db", "migrations", "004_chat_views.sql"),
             os.path.join(ROOT, "db", "migrations", "005_alert_uniqueness.sql"),
-            os.path.join(ROOT, "db", "migrations", "006_ingestion_foundation.sql")]
+            os.path.join(ROOT, "db", "migrations", "006_ingestion_foundation.sql"),
+            os.path.join(ROOT, "db", "migrations", "007_event_source_identity.sql")]
 CHECK, FK, UNIQUE, NOTNULL = "23514", "23503", "23505", "23502"
 T0 = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
 
@@ -257,6 +258,25 @@ def _():
     expect_rejected("INSERT INTO telemetry_records (asset_id, metric_id, ts, value) VALUES (%s,%s,%s,2)", (ASSET, METRIC, t), UNIQUE)
     CUR.execute("INSERT INTO event_records (asset_id, event_type_id, ts, severity) VALUES (%s,%s,%s,'info')", (ASSET, ETYPE, t))
     expect_rejected("INSERT INTO event_records (asset_id, event_type_id, ts, severity) VALUES (%s,%s,%s,'info')", (ASSET, ETYPE, t), UNIQUE)
+    CONN.rollback()
+
+
+@test("007 event identity: source IDs may differ at one instant; legacy rows keep their natural key")
+def _():
+    building_id = first_id("buildings", "building_id")
+    CUR.execute("UPDATE buildings SET building_code='EVENT-IDENTITY-TEST' WHERE building_id=%s", (building_id,))
+    CUR.execute("""INSERT INTO data_sources(source_code,building_id,connector_name,connector_version)
+                    VALUES ('event-identity-test',%s,'test','1') RETURNING source_id""", (building_id,))
+    source_id = CUR.fetchone()["source_id"]
+    t = T0 + timedelta(days=950)
+    CUR.execute("""INSERT INTO event_records(asset_id,event_type_id,ts,severity,source_id,source_event_id)
+                    VALUES (%s,%s,%s,'info',%s,'event-a'),(%s,%s,%s,'info',%s,'event-b')""",
+                (ASSET, ETYPE, t, source_id, ASSET, ETYPE, t, source_id))
+    assert one("SELECT count(*) AS n FROM event_records WHERE source_id=%s AND ts=%s", (source_id, t))["n"] == 2
+    CUR.execute("""INSERT INTO event_records(asset_id,event_type_id,ts,severity)
+                    VALUES (%s,%s,%s,'info')""", (ASSET, ETYPE, t))
+    expect_rejected("""INSERT INTO event_records(asset_id,event_type_id,ts,severity)
+                       VALUES (%s,%s,%s,'info')""", (ASSET, ETYPE, t), UNIQUE)
     CONN.rollback()
 
 

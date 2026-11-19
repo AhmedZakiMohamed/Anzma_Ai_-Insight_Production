@@ -1,5 +1,5 @@
 -- verify_schema.sql -- READ-ONLY catalog check of a live database against the authoritative schema
--- (base schema -> 003 -> 004 -> 005 -> 006; see DATABASE_BASELINE.md). Changes nothing: SELECT only.
+-- (base schema -> 003 -> 004 -> 005 -> 006 -> 007; see DATABASE_BASELINE.md). Changes nothing: SELECT only.
 -- Run:  psql -U anzma -d <db> -f verify_schema.sql        (every row must show status = OK)
 -- Exit status of psql is not affected by a failed check; read the status column (final row = overall verdict).
 WITH expected_tables(name) AS (VALUES
@@ -16,7 +16,7 @@ expected_indexes(name) AS (VALUES
   ('idx_alerts_incident'),('idx_incidents_location_last'),('idx_incidents_status'),('uq_alerts_rule_asset_first_ts'),
   ('uq_buildings_building_code'),('idx_source_credentials_source_active'),('idx_asset_external_ids_asset'),
   ('uq_event_source_event_id'),('idx_telemetry_source_received'),('idx_event_source_received'),
-  ('idx_equipment_state_asset_observed')),
+  ('idx_equipment_state_asset_observed'),('uq_event_legacy_natural_key')),
 expected_columns(tbl, col) AS (VALUES
   ('alerts','incident_id'),('alerts','evidence'),('alerts','resolved_ts'),('alerts','explanation'),
   ('alerts','explanation_source'),('alerts','explained_at'),('incidents','grouping_rule'),

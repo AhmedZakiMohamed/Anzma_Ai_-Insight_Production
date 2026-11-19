@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Migration `006_ingestion_foundation.sql` and `scripts/apply_migrations.py` are implemented. Migration 006 is additive and has not been applied to the shared existing database. Remaining units below are future design guidance unless marked implemented. |
+| **Status** | Migrations `006_ingestion_foundation.sql`, `007_event_source_identity.sql`, and `scripts/apply_migrations.py` are implemented. They have not been applied to the shared existing database. Remaining units below are future design guidance unless marked implemented. |
 | **Principle** | Incremental, additive, reversible. Existing tables, columns, views and API shapes keep working at every step. |
 | **Related** | `CORE_DATA_ARCHITECTURE.md`, `CANONICAL_DATA_MODEL.md`, `HISTORIAN_DESIGN.md`, `SPRINT_1_TECHNICAL_ISSUES.md` |
 
@@ -26,7 +26,7 @@ Format: **Current structure → Proposed canonical structure → Required adapta
 | `event_types(event_type_id, name)` | + `event_class`, `resolves_event_type_id` | Later replaces `FAULT_RECOVERY_PAIRS`, `CLOSERS`, `v_camera_status` pair logic (Phase M6, parity-tested) |
 | `metric_type_system_compat`, `event_type_system_compat` | unchanged; enforced by the ingestion service | `integrity_rules.EVENT_CATALOG` (Python duplicate) retired later |
 | `telemetry_records(telemetry_id, asset_id, metric_id, ts, value)` | Migration 006 adds nullable `source_id`, `received_at`, `quality`, `ingestion_batch_id`, `contract_version`, `source_metadata` | Existing rows remain unchanged with added fields NULL. |
-| `event_records(event_id, asset_id, event_type_id, ts, severity, details)` | Migration 006 adds nullable source, event ID, receive time, batch, contract, and metadata columns | Existing natural key is retained alongside the scoped source-event unique index. |
+| `event_records(event_id, asset_id, event_type_id, ts, severity, details)` | Migration 006 adds nullable source, event ID, receive time, batch, contract, and metadata columns | Migration 007 replaces the full natural key with a partial legacy key for rows with NULL `source_event_id`; source events use the scoped source-event unique index. |
 | `alerts(…, evidence JSONB, incident_id)` | + `building_id`, `detected_at`, `acknowledged_ts/by`, `resolved_by`, `rule_version`; UNIQUE `(rule_id, asset_id, first_ts)` | `db_adapter.store_alerts`: `NOT EXISTS` → `ON CONFLICT DO NOTHING` (same semantics) |
 | `alerts.evidence` JSON (`ref`, `source`, `record_id`, …) | `alert_evidence` rows (dual-write) | `evidence.py` keeps reading JSON until parity is proven |
 | `incidents(location_id, …)` | + `building_id` | None |
@@ -51,20 +51,21 @@ Format: **Current structure → Proposed canonical structure → Required adapta
 
 ## 2. Existing structures that will be retained
 
-All pre-006 tables and views, existing columns and unique keys, the `db_adapter` translation layer, `alerts.evidence` JSON, incident lifecycle/grouping, and existing API routes remain. Fresh database initialization now adds migration 006; applying it to existing databases uses the separate migration runner.
+All pre-006 tables and views, existing columns, and legacy API routes remain. Migration 007 intentionally replaces the event natural-key constraint with a partial index so source-ID events can share a timestamp; the legacy API still uses and enforces that natural key for rows without source IDs. Fresh database initialization adds 006–007; existing databases use the separate migration runner.
 
-## 3. Proposed structures that may be added
+## 3. Implemented and proposed structures
 
-`organizations`, `data_sources`, `asset_external_ids`, `ingestion_batches`, `ingestion_rejections`, `reporting_expectations`, `asset_state_current`, `asset_state_history`, `data_gaps`, `alert_evidence`, `retention_policies`, `unit_conversions` (optional), `schema_migrations`; views `v_telemetry_valid`, `v_telemetry_canonical`, `v_event_canonical`, `v_series_freshness`; later (measured need only) `telemetry_rollup_1h/1d`. Definitions: `CANONICAL_DATA_MODEL.md`.
+Migrations 006–007 implement `data_sources`, `source_credentials`, `asset_external_ids`, `ingestion_batches`, `ingestion_rejections`, `equipment_state_records`, `schema_migrations`, provenance/quality columns, and views `v_telemetry_valid` and `v_asset_overview`. The partial event indexes are described in §4. Still proposed: `organizations`, `reporting_expectations`, `asset_state_current`, `asset_state_history`, `data_gaps`, `alert_evidence`, `retention_policies`, optional `unit_conversions`, `v_telemetry_canonical`, `v_event_canonical`, `v_series_freshness`, and measured-need-only rollups. Definitions: `CANONICAL_DATA_MODEL.md`.
 
 ## 4. Schema changes required (by migration unit)
 
-The repository already uses `005_alert_uniqueness.sql`; productization starts at 006. Migration 006 is now the implemented first additive unit. The remaining sequencing table is a future design sketch and does not authorize additional DDL operations.
+The repository already uses `005_alert_uniqueness.sql`; ingestion foundation is implemented in 006–007. Migrations 006 and 007 are the implemented ingestion units. The remaining sequencing table is a future design sketch and does not authorize additional DDL operations.
 
 | Unit | Contents | Locking / risk |
 |---|---|---|
 | `006_ingestion_foundation.sql` **Implemented** | migration ledger; building code; source/key registry; source-scoped asset mappings; nullable provenance and quality fields; batch/rejection audit; state facts; quality-aware views | Additive, no historical fact updates or deletes; not yet applied to shared DB |
-| `007+` future | Organizations and other optional canonical-model structures | Requires separate approval; outside current scope |
+| `007_event_source_identity.sql` **Implemented** | source-event identity unique index; partial legacy natural-key index; drops only the redundant unique constraint, never rows | Additive index change; no historical rows updated/deleted; not yet applied to shared DB |
+| `008+` future | Organizations and other optional canonical-model structures | Requires separate approval; outside current scope |
 | `009_backfill.sql` (or script) | deterministic building/source/quality backfills and evidence references | Batched; only new columns; source mapping must be deterministic |
 | `010_constraints.sql` | validated constraints and indexes | Preflight duplicates and data consistency; index deployment method depends on runner |
 | `011_state_and_expectations.sql` | current/history state, reporting expectations, data gaps | Separate approved state/freshness semantics required |
@@ -92,7 +93,7 @@ The repository already uses `005_alert_uniqueness.sql`; productization starts at
 | Phase | Goal | Changes behaviour? |
 |---|---|---|
 | **M0 Baseline** | Backup + golden snapshot (§9) on a scratch copy; restore rehearsal | No |
-| **M1 Foundation (006)** | Ingestion ledger, source/building/asset identity, nullable fact provenance, batch/rejection audit | New ingestion route only |
+| **M1 Foundation (006–007)** | Ingestion ledger, source/building/asset identity, nullable fact provenance, batch/rejection audit, source-aware event keys | New ingestion route only; legacy event key retained for unscoped rows |
 | **M2 Backfill (008)** | `building_id`, `source_id`, `quality`, `alert_evidence`; `received_at` stays NULL | No |
 | **M3 Constraints & views (009, 011)** | Validate FKs; defaults for new rows; compat views | No (new rows only) |
 | **M4 Ingestion (012 + new code)** | Canonical contract endpoint behind a flag; `POST /events` unchanged | No for existing flows |
@@ -100,13 +101,13 @@ The repository already uses `005_alert_uniqueness.sql`; productization starts at
 
 ### 6.1 Applying the implemented migration to an existing deployment
 
-After deploying the code containing migration 006 and taking the normal database backup, an operator can run:
+After deploying the code containing migrations 006–007 and taking the normal database backup, an operator can run:
 
 ```sh
 docker compose --env-file .env -p anzma-insight -f deploy/compose/docker-compose.yml exec -T api python scripts/apply_migrations.py
 ```
 
-The runner takes a PostgreSQL advisory lock, applies only unrecorded additive migrations numbered 006 or later, and records each version in `schema_migrations`. It does not run seed SQL, backfill source identities, modify/delete historical fact rows, or rotate credentials. Review the migration file and confirm the target database/backup before running it. `register-building` must be used to assign `building_code` before provisioning a source. Fresh Compose volumes receive migration 006 from the init mount; existing volumes do not.
+The runner takes a PostgreSQL advisory lock, applies only unrecorded additive migrations numbered 006 or later, and records each version in `schema_migrations`. It does not run seed SQL, backfill source identities, modify/delete historical fact rows, or rotate credentials. Review the migration file and confirm the target database/backup before running it. `register-building` must be used to assign `building_code` before provisioning a source. Fresh Compose volumes receive migrations 006–007 from the init mounts; existing volumes do not.
 
 The compatible rollback is to stop using the v1 route and deploy code that does not require it. Keep migration-created tables and columns in place; do not drop them or clear populated audit/fact data. Existing ingestion APIs remain available.
 | **M6 Consolidation** | One asset-health definition, one pair definition, one connection module; remove legacy files and dead code; mark superseded docs | Only where parity tests show differences that were explicitly approved |
@@ -192,9 +193,9 @@ Report format: one table per run (check, before, after, status), kept with the p
 
 ## 11. Deployment considerations
 
-- **Fresh vs existing databases:** Compose mounts migrations 003–006 into `docker-entrypoint-initdb.d`, which Postgres runs **only on an empty volume**. Existing deployments use the advisory-locked runner for 006+; changing init mounts alone does not upgrade them.
+- **Fresh vs existing databases:** Compose mounts migrations 003–007 into `docker-entrypoint-initdb.d`, which Postgres runs **only on an empty volume**. Existing deployments use the advisory-locked runner for 006+; changing init mounts alone does not upgrade them.
 - **Fresh installs** should eventually be created by the same runner from a baseline snapshot, so fresh and migrated databases converge.
-- **Order of deployment:** deploy code that tolerates the old schema → back up/review → apply migration 006 → provision building/source credentials. The v1 route returns a schema-not-applied error before migration.
+- **Order of deployment:** deploy code that tolerates the old schema → back up/review → apply migrations 006–007 → provision building/source credentials. The v1 route returns a schema-not-applied error before migration.
 - **Zero-downtime considerations:** additive DDL is metadata-only; backfill in small batches; `CREATE INDEX CONCURRENTLY`; run validation off-peak.
 - **Detection loop** runs inside the API process (`app/main.py`); consider an advisory lock if multiple workers or concurrency tests show a race remains.
 - **Secrets:** no credentials in migrations or docs; `.env` is untracked and must not be shipped in archives (`README.md` and `.gitignore` confirm it is git-ignored; the hand-over ZIP contained one).
@@ -211,7 +212,7 @@ Report format: one table per run (check, before, after, status), kept with the p
 | 5 | Legacy `received_at` unknown | Keep NULL; documents and APIs must treat NULL as “unknown” |
 | 6 | Two DB drivers and three connection factories complicate shared code | Consolidate in M6; new code uses the driver already used by the module it extends |
 | 7 | Detection loop in API process duplicates under multiple workers | Advisory lock before scaling |
-| 8 | Test suites rebuild databases from the base schema | Apply migrations 003–006 in the test harness; tested in isolated databases. |
+| 8 | Test suites rebuild databases from the base schema | Apply migrations 003–007 in the test harness; tested in isolated databases. |
 | 9 | Seed is data-relative and non-reproducible across loads | Same-database before/after comparison (§9.1) |
 | 10 | Existing-database migration is an operational deployment step | Use the implemented advisory-locked runner after backup/review; no live migration performed here. |
 | 11 | Legacy API/DB surfaces do not have broad authentication | v1 ingestion is protected by source-scoped keys; expanding auth beyond approved ingestion is separate scope. |

@@ -273,12 +273,13 @@ def _insert_record(cur, source: dict[str, Any], batch_pk: int, contract_version:
         if row:
             return "accepted", row["event_id"]
         cur.execute(
-            """SELECT event_type_id, severity, details FROM event_records
+            """SELECT event_type_id, severity, details, ts FROM event_records
                WHERE source_id=%s AND source_event_id=%s""", (source["source_id"], value["source_event_id"])
         )
         existing = cur.fetchone()
         if existing and existing["event_type_id"] == value["event_type_id"] \
-                and existing["severity"] == value["severity"] and (existing["details"] or {}) == value["details"]:
+                and existing["severity"] == value["severity"] and (existing["details"] or {}) == value["details"] \
+                and existing["ts"] == value["observed_at"]:
             return "duplicate", None
         raise RecordRejected("CONFLICT", "An event already occupies this source identity or legacy event key; it was preserved.")
 

@@ -451,7 +451,7 @@ Discrete happenings: door forced, camera offline, link down, alarm, heartbeat.
 | Field | Req. | Type | Rule |
 |---|---|---|---|
 | `record_type` | yes | `"event"` | |
-| `source_event_id` | yes | string | The vendor's own event ID, or a deterministic value the connector derives (for example a hash of source, asset, type and `observed_at`). **[Proposed: required]** It is what keeps two distinct events in the same second from collapsing into one. |
+| `source_event_id` | yes | string | The vendor's own event ID, or a deterministic value the connector derives (for example a hash of source, asset, type and `observed_at`). **[Implemented: required]** It is what keeps two distinct events in the same second from collapsing into one. |
 | `asset` | yes | object | As above. |
 | `event_type` | yes | string | Must exist in `event_types` and be allowed for the asset's system (`event_type_system_compat`). A `door_forced` event for a camera is rejected. |
 | `observed_at` | yes | string | Event time, §3. |
@@ -556,7 +556,7 @@ Per-record outcomes: `accepted`, `duplicate` (idempotent no-op), `rejected`.
 | Same natural key, same content | `duplicate`. Counted, not stored again. |
 | Same natural key, different content | **First write wins.** The existing row is untouched; the new record is rejected `CONFLICT` and kept in `ingestion_rejections`. This v1 has no correction/overwrite operation. |
 
-"Same value" for telemetry means `|a − b| ≤ 1e-9 × max(1, |a|)` after the connector's own conversion **[Proposed]**, so a retried `24.6` versus `24.600000000000001` is a duplicate, not a conflict. For events and states, "same content" compares `event_type`/`severity` (events) and `reported_state`/`availability` (states).
+"Same value" for telemetry means `|a − b| ≤ 1e-9 × max(1, |a|)` after the connector's own conversion, so a retried `24.6` versus `24.600000000000001` is a duplicate, not a conflict. For events, `(source, source_event_id)` is the identity and same content compares event type, severity, details, and `observed_at`; reuse with any difference is a conflict. Two different `source_event_id` values may represent distinct events for the same asset/type/instant. Legacy events without source IDs retain the natural key `(asset_id, event_type_id, ts)` and the legacy endpoint still returns 409 for a duplicate. For states, same content compares reported state, availability, reason, and message.
 
 There is **no correction mechanism in v1.** A sender that legitimately needs to correct an earlier value has no supported path yet. **[Open]** `supersedes` semantics for sanctioned corrections, a v1.x candidate.
 

@@ -1,6 +1,6 @@
 > **DRAFT / NOT AUTHORITATIVE.** This describes the *proposed* 22-table unified schema (`data-model.sql`, a Day 1 draft that no
 > install loads and no code reads). The historical deployed schema was 13 tables + 5 views through migration 005;
-> repository migration 006 adds the ingestion foundation. See [DATABASE_BASELINE.md](DATABASE_BASELINE.md) and
+> repository migrations 006–007 add the ingestion foundation and source-aware event identity. See [DATABASE_BASELINE.md](DATABASE_BASELINE.md) and
 > [CANONICAL_DATA_MODEL.md](CANONICAL_DATA_MODEL.md) for current status.
 > The `migrations/001_unified_schema.sql` named below does not exist in this repository.
 

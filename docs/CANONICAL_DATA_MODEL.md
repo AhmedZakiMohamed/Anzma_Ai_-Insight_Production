@@ -2,18 +2,18 @@
 
 | | |
 |---|---|
-| **Status** | Canonical model and implementation reference. Migration 006 implements the approved ingestion foundation; optional structures below remain proposals. |
-| **Baseline** | Historical deployed baseline: 13 tables and 5 views through migration 005. Repository target adds migration 006 for ingestion; see `DATABASE_BASELINE.md` and `DATA_MIGRATION_PLAN.md`. |
+| **Status** | Canonical model and implementation reference. Migrations 006–007 implement the approved ingestion foundation and event identity constraints; optional structures below remain proposals. |
+| **Baseline** | Historical deployed baseline: 13 tables and 5 views through migration 005. Repository target includes migrations 006–007; see `DATABASE_BASELINE.md` and `DATA_MIGRATION_PLAN.md`. |
 | **Related** | `CORE_DATA_ARCHITECTURE.md`, `HISTORIAN_DESIGN.md`, `DATA_MIGRATION_PLAN.md`, `SPRINT_1_TECHNICAL_ISSUES.md` |
 
-Notation: **[Existing]** present before migration 006 · **[Implemented]** added by 006/code · **[NEW]** future proposal · **[Open]** requires a separate decision.
+Notation: **[Existing]** present before migration 006 · **[Implemented]** added by 006/007/code · **[NEW]** future proposal · **[Open]** requires a separate decision.
 No DDL here is a migration; the column lists are specifications for review.
 
 ## Implementation status (18 November 2026)
 
 - **Implemented and runtime-verified:** multiple buildings, locations, system types and assets are represented by `buildings`, `locations`, `system_types`, and `assets`; assets reference a system and location, and locations reference a building. PostgreSQL also contains historical `telemetry_records`, `event_records`, alerts, and incidents. Telemetry/event rows do not carry explicit building IDs; building is derived through the asset/location relationship.
 - **Implemented and test-verified:** alert rules and anomaly detection, incident grouping/lifecycle, evidence re-reading and grounding checks, recommendations, chat/dashboard routes, and the Day 3 bandwidth percentage correction. The current checkout's offline unit suite passed 25/25; see `PRODUCTIZATION_IMPLEMENTATION_REPORT.md` for the bounded verification record.
-- **Implemented (migration 006 + code):** `/api/v1/ingest/batches`, source registry and hashed credentials, source-scoped asset IDs, nullable provenance/quality columns, batch/rejection audit, append-only equipment-state facts, and valid telemetry view. Existing facts were not backfilled; operational readers exclude quality `BAD` while retaining legacy `NULL` quality.
+- **Implemented (migrations 006–007 + code):** `/api/v1/ingest/batches`, source registry and hashed credentials, source-scoped asset IDs, nullable provenance/quality columns, batch/rejection audit, append-only equipment-state facts, quality-aware telemetry view, and distinct source event IDs at a shared asset/type/time. Existing facts were not backfilled; operational readers exclude quality `BAD` while retaining legacy `NULL` quality.
 - **Not implemented:** freshness/gap tracking, retention policy, rollups, organization hierarchy, and migration 006 application to the shared runtime database.
 - **Known limitation:** the existing seed is synthetic. The current multi-building schema is a structural capability, not proof that every API, chat query, or dashboard path enforces building-level isolation.
 - **Approved and implemented for contract v1 (18 November 2026):** `/api/v1/ingest/batches`; per-record outcomes committed in one batch transaction; external IDs unique per source and mapped only to assets in that source's building; per-source bearer API keys stored as hashes with revocation/rotation; first-write-wins for telemetry conflicts, with rejected payloads retained separately.
@@ -244,7 +244,7 @@ Four *independent* dimensions plus lifecycle. All are about the **equipment/data
 **`event_records` [Existing] + new columns:** `building_id`, `received_at`, `source_id`, `source_event_id` (connector’s own event ID; dedupe key), `contract_version`. `severity` stays the *reported* severity (`info|warning|critical`). `details` JSONB unchanged (existing consumers read keys such as `reason`, `badge`/`card_id`, `seconds_open`, `port`).
 `event_types` gains `event_class` (`ACTIVITY|FAULT_OPEN|FAULT_CLOSE|HEARTBEAT|STATE_REPORT`) and `resolves_event_type_id` (self-FK; e.g. `link_up → link_down`), consolidating the three hand-written pair lists (`dashboard_core_pg.FAULT_RECOVERY_PAIRS`, `integrity_rules.CLOSERS`, `v_camera_status`).
 **System-generated events** (e.g. `state_changed`, `source_status_changed`) are ordinary `event_records` whose `source_id` points to the built-in source `core-engine` (`source_type='CORE'`).
-Idempotency: existing UNIQUE `(asset_id, event_type_id, ts)` stays for legacy rows; connector events additionally use `UNIQUE (source_id, source_event_id) WHERE source_event_id IS NOT NULL` so distinct events in the same second are not collapsed (F-15).
+Idempotency: migration 007 preserves the legacy natural key `(asset_id, event_type_id, ts)` only when `source_event_id IS NULL`; connector events use `UNIQUE (source_id, source_event_id) WHERE source_event_id IS NOT NULL` so distinct events in the same second are not collapsed.
 
 **`alerts` [Existing] + new columns:** `building_id`; `detected_at` (processing time — today’s `detected_ts` is the first data timestamp of the detection, F-16); `acknowledged_ts`, `acknowledged_by`, `resolved_by`; `rule_version`. Threshold vs anomaly vs compound stays in `detection_method`. Add `UNIQUE (rule_id, asset_id, first_ts)` (F-14). Lifecycle remains `open → acknowledged → resolved` with `CHECK ((status='resolved') = (resolved_ts IS NOT NULL))` (existing).
 **`incidents` [Existing] + new column** `building_id` (derived from `location_id`); lifecycle and grouping unchanged.
@@ -335,7 +335,7 @@ Existing rows retain `quality=NULL` because their historical quality is unknown.
 | `asset_external_ids` | PK `(source_id, external_id)`; index `(asset_id)` | resolution |
 | `data_sources` | `UNIQUE (source_code)`; CHECK `source_type`, `status`; index `(building_id)` | |
 | `telemetry_records` | keep `UNIQUE (asset_id, metric_id, ts)`; FK `(asset_id, building_id)`; CHECK `quality`; `CHECK (received_at IS NULL OR ts <= received_at + interval '5 minutes')`; index `(building_id, ts)`; index `(source_id, received_at)` | idempotency, provenance, building analytics |
-| `event_records` | keep both UNIQUEs; add partial `UNIQUE (source_id, source_event_id)`; FK `(asset_id, building_id)`; index `(building_id, ts)`, `(event_type_id, ts)` | F-15 |
+| `event_records` | keep source event unique key; legacy natural key is partial where `source_event_id IS NULL`; FK `(asset_id, building_id)` and additional indexes remain future proposals | F-15 |
 | `event_types` | self-FK `resolves_event_type_id`; CHECK `event_class` | single fault/recovery definition |
 | `reporting_expectations` | `UNIQUE (asset_id, metric_id)` (NULL metric handled by a partial unique index); `CHECK (expected_interval_s > 0)` | |
 | `asset_state_current` | PK `asset_id`; CHECK enums; **CHECK: `freshness IN ('FRESH','NOT_APPLICABLE') OR operational_state` stays independent** (no silence-implies-state rule) | AD-06 |
@@ -472,7 +472,7 @@ Vendor B raw (illustrative): `{"deviceId":"B-77/ai3","value":24.6,"unit":"Celsiu
 
 - **Contract version** `MAJOR.MINOR` in every envelope and stored per row (`contract_version`). This implementation accepts `1.0`; future compatibility/deprecation windows require a versioned contract change.
 - **Unknown fields:** ignored with a warning in the response; only `source_metadata`/`details` content is persisted opaque. Unknown enum values → reject.
-- **Schema evolution:** migrations `003_incidents.sql` through `006_ingestion_foundation.sql` exist. Migration 006 adds `schema_migrations`; `scripts/apply_migrations.py` applies 006+ to existing databases under an advisory lock. Compose init mounts still apply only to empty database volumes.
-- **Backward compatibility rules:** migration 006 is additive; existing endpoints and response shapes (`/dashboard/*`, `/alerts`, `/incidents`, `/chat`, `/ask`, `POST /events`, `POST /alerts`) remain supported. Legacy facts retain NULL source/quality/received metadata.
+- **Schema evolution:** migrations `003_incidents.sql` through `007_event_source_identity.sql` exist. Migration 006 adds `schema_migrations`; `scripts/apply_migrations.py` applies 006+ to existing databases under an advisory lock. Compose init mounts still apply only to empty database volumes.
+- **Backward compatibility rules:** migrations 006–007 preserve historical fact rows; existing endpoints and response shapes (`/dashboard/*`, `/alerts`, `/incidents`, `/chat`, `/ask`, `POST /events`, `POST /alerts`) remain supported. Legacy facts retain NULL source/quality/received metadata, and legacy event duplicate handling stays intact.
 - **API compatibility:** the versioned route is `POST /api/v1/ingest/batches`; batch result retrieval is `GET /api/v1/ingest/batches/{batch_id}`.
 - **Terminology for UI vs DB** stays a translation layer (AD-04).

@@ -14,6 +14,7 @@ services:
       - ../../db/migrations/004_chat_views.sql:/docker-entrypoint-initdb.d/03-chat-views.sql:ro
       - ../../db/migrations/005_alert_uniqueness.sql:/docker-entrypoint-initdb.d/04-alert-uniqueness.sql:ro
       - ../../db/migrations/006_ingestion_foundation.sql:/docker-entrypoint-initdb.d/05-ingestion-foundation.sql:ro
+      - ../../db/migrations/007_event_source_identity.sql:/docker-entrypoint-initdb.d/06-event-source-identity.sql:ro
     ports:
       - "5432:5432"
     healthcheck:

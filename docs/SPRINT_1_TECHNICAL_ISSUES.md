@@ -3,7 +3,7 @@
 Prioritised technical issues and dependencies derived from the Day 1 review (`CORE_DATA_ARCHITECTURE.md` findings **F-xx**), reconciled with repository/runtime inspection on 18 November 2026.
 No deadlines, estimates or assignees are given: none are supported by evidence in the repository.
 
-> **Current scope note (18 November 2026):** migration 006, the advisory-locked migration runner, per-source hashed credentials, source-scoped mapping, batch API, rejection audit, and quality-aware readers are implemented and tested in an isolated PostgreSQL project. The shared running database remains at its pre-006 schema. Older issue descriptions below are historical unless their status explicitly says current; use `INGESTION_CONTRACT.md` and `DATA_MIGRATION_PLAN.md` for the approved implementation.
+> **Current scope note (19 November 2026):** migrations 006–007, the advisory-locked migration runner, per-source hashed credentials, source-scoped mapping, batch API, rejection audit, quality-aware readers, and event collision fix are implemented and tested in an isolated PostgreSQL project. The shared running database remains at its pre-006 schema. Older issue descriptions below are historical unless their status explicitly says current; use `INGESTION_CONTRACT.md` and `DATA_MIGRATION_PLAN.md` for the approved implementation.
 
 | Priority | Meaning |
 |---|---|
@@ -80,7 +80,7 @@ flowchart TD
 
 ### ISS-002 — No migration runner or schema versioning
 - **Priority:** P0 · **Status:** Migration 006 and runner implemented; shared DB not yet migrated. · **Phase:** M1
-- **Situation / evidence:** migration 006 adds `schema_migrations`; `scripts/apply_migrations.py` applies unapplied 006+ files under an advisory lock. Fresh Compose initialization mounts migration 006.
+- **Situation / evidence:** migration 006 adds `schema_migrations`; `scripts/apply_migrations.py` applies unapplied 006+ files under an advisory lock. Fresh Compose initialization mounts migrations 006–007.
 - **Action:** operator reviews backup/target and runs the documented migration command when deploying. Init mounts do not upgrade an existing volume.
 - **Acceptance:** **Code/schema acceptance passed in isolated DB** (20 tables, 7 views; migration applied twice); shared DB upgrade remains a deployment action.
 
@@ -115,11 +115,10 @@ flowchart TD
 - **Acceptance:** isolated integrity test confirms existing facts remain and the new columns stay NULL; `v_telemetry_valid` excludes BAD and retains legacy NULL quality.
 
 ### ISS-007 — Event uniqueness can collapse distinct events
-- **Priority:** P1 · **Status:** Source event IDs and scoped uniqueness implemented; legacy natural key retained. · **Phase:** M1
-- **Situation / evidence:** `event_records UNIQUE (asset_id, event_type_id, ts)`; `POST /events` returns 409 on conflict (`app/main.py::create_event`).
-- **Action:** migration 006 adds nullable `source_event_id` and a partial unique index; the service treats same-key/same-content as a duplicate and rejects conflicting reuse.
-- **Depends on:** ISS-006.
-- **Acceptance:** two events of the same type on one asset in the same second with different `source_event_id` are both stored; replaying one is a duplicate no-op.
+- **Priority:** P1 · **Status:** Resolved by migration 007 and source event identity checks. · **Phase:** M1
+- **Situation / evidence:** legacy `UNIQUE (asset_id, event_type_id, ts)` prevented different source events at the same instant.
+- **Change:** migration 007 drops that full unique constraint after creating its partial replacement for `source_event_id IS NULL`; the source event ID unique index from 006 handles connector records. `POST /events` chooses the matching legacy conflict target when the partial index exists and remains compatible before it does.
+- **Verification:** isolated API tests accept two distinct source IDs at the same asset/type/time; reject reuse of one ID with changed details or time as `CONFLICT`; and keep duplicate legacy `POST /events` at HTTP 409. Data integrity 22/22, frontend/API 20/20, Day 2 43/43, E2E 14/14; schema verifier OVERALL OK.
 
 ### ISS-013 — No regression baseline harness for KPI/alert/incident/evidence/AI/chat
 - **Priority:** P1 (blocker for every change) · **Phase:** M0 / H0

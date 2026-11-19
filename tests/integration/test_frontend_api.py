@@ -32,7 +32,8 @@ with psycopg.connect(host=HOST, port=PORT, user=USER, password=PASSWORD, dbname=
 DB = psycopg.connect(host=HOST, port=PORT, user=USER, password=PASSWORD, dbname=TEST_DB, row_factory=dict_row,
                      autocommit=True)
 DB.execute(sql_file("db/init/anzma_schema_and_seed.sql"))
-for _m in ("003_incidents", "004_chat_views", "005_alert_uniqueness", "006_ingestion_foundation"):   # runtime sequence
+for _m in ("003_incidents", "004_chat_views", "005_alert_uniqueness", "006_ingestion_foundation",
+           "007_event_source_identity"):   # runtime sequence
     DB.execute(sql_file(f"db/migrations/{_m}.sql"))
 
 os.environ.update(PGHOST=HOST, PGPORT=PORT, PGUSER=USER, PGPASSWORD=PASSWORD, PGDATABASE=TEST_DB)
@@ -111,6 +112,29 @@ def _():
     audit = client.get(f"/api/v1/ingest/batches/{batch_id}", headers=auth)
     assert audit.status_code == 200 and audit.json()["rejected"][0]["payload"] == bad
     assert one("SELECT count(*) AS n FROM ingestion_rejections")["n"] == 2
+
+    event_time = "2000-01-01T00:30:00Z"
+    event_a = {"record_type": "event", "asset": {"asset_code": asset["asset_code"]},
+               "observed_at": event_time, "source_event_id": "source-event-a",
+               "event_type": "hvac_fault", "severity": "INFO", "details": {"origin": "a"}}
+    event_b = {**event_a, "source_event_id": "source-event-b", "details": {"origin": "b"}}
+    event_batch = {**body, "batch_id": str(uuid.uuid4()), "records": [event_a, event_b]}
+    event_result = client.post("/api/v1/ingest/batches", json=event_batch, headers=auth)
+    assert event_result.status_code == 200
+    assert [r["outcome"] for r in event_result.json()["results"]] == ["ACCEPTED", "ACCEPTED"]
+    at_same_instant = DB.execute("""SELECT count(*) AS n FROM event_records
+                                  WHERE source_id=(SELECT source_id FROM data_sources WHERE source_code=%s)
+                                    AND ts=%s""", (source_code, datetime(2000, 1, 1, 0, 30, tzinfo=timezone.utc))).fetchone()["n"]
+    assert at_same_instant == 2
+
+    event_conflict = {**event_a, "details": {"origin": "changed"}}
+    conflict_batch = {**body, "batch_id": str(uuid.uuid4()), "records": [event_conflict]}
+    conflict_result = client.post("/api/v1/ingest/batches", json=conflict_batch, headers=auth)
+    assert conflict_result.status_code == 422 and conflict_result.json()["results"][0]["reason_code"] == "CONFLICT"
+    retimed = {**event_a, "observed_at": "2000-01-01T00:31:00Z"}
+    retimed_batch = {**body, "batch_id": str(uuid.uuid4()), "records": [retimed]}
+    retimed_result = client.post("/api/v1/ingest/batches", json=retimed_batch, headers=auth)
+    assert retimed_result.status_code == 422 and retimed_result.json()["results"][0]["reason_code"] == "CONFLICT"
     stored_hash = one("""SELECT c.key_hash FROM source_credentials c JOIN data_sources s USING(source_id)
                        WHERE s.source_code=%s""", source_code)["key_hash"].strip()
     assert stored_hash == hashlib.sha256(token.encode()).hexdigest() and token not in stored_hash
@@ -441,6 +465,9 @@ def _():
     event = client.post("/events", json={"asset_id": asset["asset_id"], "event_type": "hvac_fault",
                                         "ts": ts, "severity": "INFO", "details": {"compat": True}})
     assert event.status_code == 201, event.text
+    duplicate_event = client.post("/events", json={"asset_id": asset["asset_id"], "event_type": "hvac_fault",
+                                                   "ts": ts, "severity": "INFO", "details": {"compat": True}})
+    assert duplicate_event.status_code == 409
     alert = client.post("/alerts", json={"rule_id": "HVAC_HIGH_TEMP", "asset_id": asset["asset_id"],
                                         "severity": "WARNING", "summary": "legacy endpoint compatibility",
                                         "first_ts": ts, "facts": {"compat": True}})

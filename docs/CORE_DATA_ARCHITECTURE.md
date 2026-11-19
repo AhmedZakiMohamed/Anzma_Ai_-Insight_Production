@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Document** | Week 3 / Day 1 — Data Architecture & Core Reliability |
-| **Status** | Historical runtime baseline plus the implemented ingestion extension in migration 006. Other target architecture sections remain proposals unless marked implemented. |
+| **Status** | Historical runtime baseline plus implemented ingestion extensions in migrations 006–007. Other target architecture sections remain proposals unless marked implemented. |
 | **Source of truth** | Repository code/migrations on `feature/ingestion-foundation`, plus the separately recorded read-only inspection of the pre-006 running database. Migration 006 has not been applied to that existing database. |
 | **Related** | `CANONICAL_DATA_MODEL.md`, `HISTORIAN_DESIGN.md`, `DATA_MIGRATION_PLAN.md`, `SPRINT_1_TECHNICAL_ISSUES.md` |
 
@@ -20,13 +20,14 @@ Conventions used in all five documents:
 
 ## 1. Executive summary
 
-Anzma AI Insight today is a single-database, simulated-data application. The historical deployed schema has 13 tables and 5 views; new installs add seven tables and two views through migration 006. The load order is:
+Anzma AI Insight today is a single-database, simulated-data application. The historical deployed schema has 13 tables and 5 views; new installs add seven tables and two views through migration 006, then source-aware event uniqueness through migration 007. The load order is:
 
 1. `db/init/anzma_schema_and_seed.sql` — 12 tables + seed.
 2. `db/migrations/003_incidents.sql` — `incidents` table and `alerts.incident_id`.
 3. `db/migrations/004_chat_views.sql` — 5 read-only views (`v_data_clock`, `v_asset_overview`, `v_incident_overview`, `v_alert_overview`, `v_camera_status`).
 4. `db/migrations/005_alert_uniqueness.sql` — unique alert key used by `store_alerts`.
 5. `db/migrations/006_ingestion_foundation.sql` — sources/hashed credentials, scoped asset mappings, nullable fact provenance and quality, batch/rejection audit, state facts, and compatibility views.
+6. `db/migrations/007_event_source_identity.sql` — preserve the legacy event key only for rows without source IDs; source events are unique by `(source_id, source_event_id)`.
 
 The existing intelligence (KPI engine, alert engine, incident engine, evidence verification, grounding validation, chat assistant) is coherent and tested (`TEST_RESULTS_DAY2.txt`: 43/43 integration checks; `TEST_RESULTS_CHAT_CONSISTENCY.txt`: 31/31). **It should be preserved, not rewritten.**
 
@@ -134,12 +135,12 @@ Priority: P0 critical reliability/integrity · P1 required for productization fo
 | F-12 | `alert_engine.py:179,347`; `chat_lite.py:566` | `zone == "Server Room"` selects stricter thresholds and the motion rule; playbook action `HVAC_IT_NOTIFY` conditions on the same string. | Behaviour keyed on a display name. | `locations.zone_type` / `is_sensitive` columns. | P2 | Backfill `zone_type` for “Server Room” keeps results identical |
 | F-13 | `system_types.code CHECK (...)`, `reference_data.SYSTEM_CODES`, `v_camera_status` (`asset_type='camera'`), `dashboard_core_pg` metric-name constants | Adding a building system requires a DDL change and code edits. | Violates “future building systems without code changes”. | Drop the CHECK in favour of catalogue rows; read system list from the DB. | P2 | None |
 | F-14 | `app/adapters/database/db_adapter.py::store_alerts`; `db/migrations/005_alert_uniqueness.sql` | A database UNIQUE index now protects `(rule_id, asset_id, first_ts)` after duplicate pre-check. The background loop, `POST /alerts/run`, and `POST /alerts` can still execute concurrently; no advisory lock was verified. | The index prevents duplicate rows, but concurrent detection/incident assignment still needs a focused regression check. | Retain migration 005; test concurrent detection and consider an advisory lock only if that test demonstrates a remaining race. | P0 | No existing API contract change |
-| F-15 | `event_records` UNIQUE `(asset_id, event_type_id, ts)` | Two distinct events of the same type on the same asset at the same timestamp collapse (second is dropped/409). | Silent loss of legitimate events from real devices. | Add `source_id` + `source_event_id` dedupe key for connector events; keep the old key for legacy rows. | P1 | None for existing rows |
+| F-15 | `event_records` uniqueness; migration 007 | Legacy rows keep `(asset_id, event_type_id, ts)` when `source_event_id IS NULL`; source events use `(source_id, source_event_id)`. | Avoid collisions between distinct connector events without changing legacy duplicate behavior. | Implemented; service returns DUPLICATE for exact retry and CONFLICT for changed content/time. | Complete | Existing rows unchanged |
 | F-16 | `alert_engine.make_alert` (`detected_ts`) | For threshold rules `detected_ts` is the **first data timestamp of the run**, not processing time; `created_at` is processing time. | Misleading semantics for latency/SLAs. | Document; add `detected_at` (processing time) in canonical alert, keep `detected_ts` for compatibility. | P2 | None |
 | F-17 | `app/domain/alerts/alert_engine.py` legacy functions | Some legacy functions refer to tables outside the runtime schema; active detection uses `app/adapters/database/db_adapter.py` and the current pipeline. | Dead/unused paths are easy to mistake for runtime behavior. | Keep the active pipeline path authoritative; remove dead functions only after import/call-site checks and tests. | P2 | None |
 | F-18 | `legacy/dashboard_api.py`, `legacy/chat_engine.py`, `legacy/chat_api.py` | These modules query an older schema and are outside the active `app.main` router registration. | Confusing duplicates can be mistaken for supported routes. | Retain as legacy until call sites and migration history are reviewed; do not treat them as the operational API. | P2 | None |
 | F-19 | `docs/data-model.sql`, `docs/DATA_MODEL.md`, ERD assets, `docs/ARCHITECTURE.md`, and API proposals | These describe earlier unified schemas and/or routes not mounted by the current application. `docs/DATA_MODEL.md` refers to a migration that is absent from this checkout. | Multiple drafts can be mistaken for the runtime model. | Treat the SQL bootstrap/migrations as runtime authority and this canonical model as the target proposal; keep older drafts clearly labeled and cross-linked. | P1 | None (docs) |
-| F-20 | `deploy/compose/docker-compose.yml`; `db/migrations/006`; `scripts/apply_migrations.py` | Fresh volumes initialize 003–006; existing databases need the advisory-locked runner for 006+. | Init mounts alone do not upgrade existing volumes. | Implemented; apply only after backup/review using the procedure in `DATA_MIGRATION_PLAN.md`. | Complete | Deployment procedure |
+| F-20 | `deploy/compose/docker-compose.yml`; `db/migrations/006`; `scripts/apply_migrations.py` | Fresh volumes initialize 003–007; existing databases need the advisory-locked runner for 006+. | Init mounts alone do not upgrade existing volumes. | Implemented; apply only after backup/review using the procedure in `DATA_MIGRATION_PLAN.md`. | Complete | Deployment procedure |
 | F-21 | `dashboard_core_pg.open_readonly`; `App.day2_connect`; `db_adapter.connect` | Three connection factories, two drivers (psycopg v3 and psycopg2). `open_readonly` is not actually read-only (comment only); default passwords `"change-me"` / `""`. No pooling. | Hygiene and security; per-request connections. | One connection module; genuine read-only role for read paths; env-required credentials. | P2 | None |
 | F-22 | `chat_lite._safe_sql`, `_run_readonly_sql` | LLM tool runs model-written SQL on the app connection (`SET TRANSACTION READ ONLY`, 5 s timeout, string blocklist, `LIMIT 200`). Unscoped by building. | String blocklist is brittle (false positives/negatives); no tenant scoping; uses the application user. | Dedicated read-only DB role + building-scoped views before multi-customer use. | P1 | Chat must keep answering from `v_*` views |
 | F-23 | `dashboard_core_pg` `heartbeat_compliance`; `alert_config.T['reading_gap_min']` | Hourly heartbeat and 15-minute cadence are global constants (`expected_slots = seconds // 3600 + 1`; `reading_gap_min=20`). | No per-asset expected interval; cannot represent assets that report every 5 s or every 6 h. | `reporting_expectations` per asset/metric. | P1 | KPI formula must still return the same value for current assets |
@@ -224,8 +225,8 @@ The Core must not import any vendor SDK and must not branch on vendor name. The 
 | Layer | Definition |
 |---|---|
 | **Pre-006 deployed baseline** | Base schema plus migrations 003–005: 13 tables and 5 views, verified read-only in the shared database on 18 November 2026. |
-| **Repository schema target** | The pre-006 schema plus migration 006: 20 tables and 7 views, verified in an isolated test database. |
-| **Migration state** | Migration 006 is included on fresh init and has an explicit runner for existing databases; the shared database has not been migrated. |
+| **Repository schema target** | The pre-006 schema plus migrations 006–007: 20 tables and 7 views, verified in an isolated test database. |
+| **Migration state** | Migrations 006–007 are included on fresh init and have an explicit runner for existing databases; the shared database has not been migrated. |
 | **Compatibility mechanisms** | Nullable additive columns; `v_telemetry_valid`; existing `db_adapter` translation; legacy APIs remain supported; isolated migration and route regressions. |
 | **Not authoritative** | `data-model.sql`, `DATA_MODEL.md`, `ERD-new.png`, `NEW-ERD.png`, `docs/ARCHITECTURE.md`, `docs/API_CONTRACT.md`, `dashboard_api.py`, `chat_engine.py`, `chat_api.py`, legacy functions in `alert_engine.py`. |
 
