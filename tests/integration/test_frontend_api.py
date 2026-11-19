@@ -10,6 +10,7 @@ from datetime import timedelta
 from datetime import datetime, timezone
 import hashlib
 import secrets
+import subprocess
 import uuid
 
 TEST_DB = "anzma_api_test"
@@ -33,7 +34,7 @@ DB = psycopg.connect(host=HOST, port=PORT, user=USER, password=PASSWORD, dbname=
                      autocommit=True)
 DB.execute(sql_file("db/init/anzma_schema_and_seed.sql"))
 for _m in ("003_incidents", "004_chat_views", "005_alert_uniqueness", "006_ingestion_foundation",
-           "007_event_source_identity"):   # runtime sequence
+           "007_event_source_identity", "008_ingestion_contract_conformance"):   # runtime sequence
     DB.execute(sql_file(f"db/migrations/{_m}.sql"))
 
 os.environ.update(PGHOST=HOST, PGPORT=PORT, PGUSER=USER, PGPASSWORD=PASSWORD, PGDATABASE=TEST_DB)
@@ -63,7 +64,7 @@ def _ingestion_setup():
                   WHERE c.system_type_id=%s ORDER BY m.metric_id LIMIT 1""", asset["system_type_id"])
     building_code = "API-INGEST-TEST"
     DB.execute("UPDATE buildings SET building_code=%s WHERE building_id=%s", (building_code, asset["building_id"]))
-    source_code = "api-ingest-test"
+    source_code = f"api-ingest-test-{uuid.uuid4().hex[:8]}"
     DB.execute("""INSERT INTO data_sources(source_code,building_id,connector_name,connector_version)
                    VALUES (%s,%s,'integration-test','1')""", (source_code, asset["building_id"]))
     token = f"azk_{secrets.token_hex(6)}_{secrets.token_urlsafe(32)}"
@@ -77,7 +78,8 @@ def _ingestion_setup():
 def _():
     asset, metric, building_code, source_code, token = _ingestion_setup()
     auth = {"Authorization": f"Bearer {token}"}
-    observed_at = "2000-01-01T00:00:00Z"
+    observed_dt = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(days=5)
+    observed_at = observed_dt.isoformat().replace("+00:00", "Z")
     good = {"record_type": "telemetry", "asset": {"asset_code": asset["asset_code"]},
             "observed_at": observed_at, "metric_code": metric["name"], "value": 12.5, "unit": metric["unit"]}
     bad = {**good, "value": 13.5, "unit": "wrong-unit"}
@@ -94,7 +96,7 @@ def _():
     assert [item["outcome"] for item in result["results"]] == ["ACCEPTED", "REJECTED"]
     assert result["counts"] == {"received": 2, "accepted": 1, "duplicate": 0, "rejected": 1}
     prior_value = one("SELECT value FROM telemetry_records WHERE asset_id=%s AND ts=%s",
-                      asset["asset_id"], datetime(2000, 1, 1, tzinfo=timezone.utc))["value"]
+                      asset["asset_id"], observed_dt)["value"]
     assert prior_value == 12.5
     replay = client.post("/api/v1/ingest/batches", json=body, headers=auth)
     assert replay.status_code == 200 and replay.headers.get("Idempotent-Replay") == "true"
@@ -108,12 +110,13 @@ def _():
     conflict = client.post("/api/v1/ingest/batches", json=conflict_body, headers=auth)
     assert conflict.status_code == 422 and conflict.json()["status"] == "REJECTED"
     assert one("SELECT value FROM telemetry_records WHERE asset_id=%s AND ts=%s",
-               asset["asset_id"], datetime(2000, 1, 1, tzinfo=timezone.utc))["value"] == 12.5
+               asset["asset_id"], observed_dt)["value"] == 12.5
     audit = client.get(f"/api/v1/ingest/batches/{batch_id}", headers=auth)
     assert audit.status_code == 200 and audit.json()["rejected"][0]["payload"] == bad
     assert one("SELECT count(*) AS n FROM ingestion_rejections")["n"] == 2
 
-    event_time = "2000-01-01T00:30:00Z"
+    event_dt = observed_dt + timedelta(seconds=30)
+    event_time = event_dt.isoformat().replace("+00:00", "Z")
     event_a = {"record_type": "event", "asset": {"asset_code": asset["asset_code"]},
                "observed_at": event_time, "source_event_id": "source-event-a",
                "event_type": "hvac_fault", "severity": "INFO", "details": {"origin": "a"}}
@@ -124,14 +127,14 @@ def _():
     assert [r["outcome"] for r in event_result.json()["results"]] == ["ACCEPTED", "ACCEPTED"]
     at_same_instant = DB.execute("""SELECT count(*) AS n FROM event_records
                                   WHERE source_id=(SELECT source_id FROM data_sources WHERE source_code=%s)
-                                    AND ts=%s""", (source_code, datetime(2000, 1, 1, 0, 30, tzinfo=timezone.utc))).fetchone()["n"]
+                                    AND ts=%s""", (source_code, event_dt)).fetchone()["n"]
     assert at_same_instant == 2
 
     event_conflict = {**event_a, "details": {"origin": "changed"}}
     conflict_batch = {**body, "batch_id": str(uuid.uuid4()), "records": [event_conflict]}
     conflict_result = client.post("/api/v1/ingest/batches", json=conflict_batch, headers=auth)
     assert conflict_result.status_code == 422 and conflict_result.json()["results"][0]["reason_code"] == "CONFLICT"
-    retimed = {**event_a, "observed_at": "2000-01-01T00:31:00Z"}
+    retimed = {**event_a, "observed_at": (event_dt + timedelta(minutes=1)).isoformat().replace("+00:00", "Z")}
     retimed_batch = {**body, "batch_id": str(uuid.uuid4()), "records": [retimed]}
     retimed_result = client.post("/api/v1/ingest/batches", json=retimed_batch, headers=auth)
     assert retimed_result.status_code == 422 and retimed_result.json()["results"][0]["reason_code"] == "CONFLICT"
@@ -472,6 +475,173 @@ def _():
                                         "severity": "WARNING", "summary": "legacy endpoint compatibility",
                                         "first_ts": ts, "facts": {"compat": True}})
     assert alert.status_code == 201, alert.text
+
+
+@test("contract §13.3: all 16 conformance vectors plus 0.4 validation, audit, and quality semantics")
+def _():
+    asset, metric, building_code, source_code, token = _ingestion_setup()
+    auth = {"Authorization": f"Bearer {token}"}
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    z = lambda value: value.isoformat().replace("+00:00", "Z")
+    base_ts = z(now - timedelta(days=5))
+    def batch(records, **extra):
+        return {"contract_version": "1.0", "batch_id": str(uuid.uuid4()), "sent_at": z(now),
+                "source": {"source_code": source_code, "connector": {"name": "conformance", "version": "1"}},
+                "building_code": building_code, "records": records, **extra}
+    def telemetry(ts, value=15.0, **extra):
+        return {"record_type": "telemetry", "asset": {"asset_code": asset["asset_code"]},
+                "observed_at": ts, "metric_code": metric["name"], "value": value,
+                "unit": metric["unit"], **extra}
+    def post(records, **extra):
+        payload = batch(records, **extra)
+        return payload, client.post("/api/v1/ingest/batches", json=payload, headers=auth)
+
+    # 1: valid batch with telemetry, event, and state.
+    t1 = z(now - timedelta(days=4))
+    three = [telemetry(t1),
+             {"record_type": "event", "asset": {"asset_code": asset["asset_code"]},
+              "observed_at": t1, "source_event_id": "cv-event-1", "event_type": "hvac_fault"},
+             {"record_type": "state", "asset": {"asset_code": asset["asset_code"]},
+              "observed_at": t1, "reported_state": "RUNNING"}]
+    p1, r1 = post(three, delivery_mode="BACKFILL")
+    assert r1.status_code == 200 and r1.json()["status"] == "ACCEPTED" and r1.json()["counts"]["accepted"] == 3
+    persisted = one("SELECT delivery_mode,connector_status FROM ingestion_batches WHERE batch_id=%s", p1["batch_id"])
+    assert persisted["delivery_mode"] == "BACKFILL" and persisted["connector_status"] is None
+
+    # 2–5: batch replay, changed-payload reuse, exact record duplicate, immutable conflict.
+    replay = client.post("/api/v1/ingest/batches", json=p1, headers=auth)
+    assert replay.status_code == 200 and replay.headers.get("Idempotent-Replay") == "true"
+    changed = {**p1, "records": [*three[:-1], {**three[-1], "reported_state": "STOPPED"}]}
+    assert client.post("/api/v1/ingest/batches", json=changed, headers=auth).status_code == 409
+    p4, r4 = post([telemetry(t1)])
+    assert r4.status_code == 200 and r4.json()["counts"]["duplicate"] == 1
+    p5, r5 = post([telemetry(t1, value=17.0)])
+    assert r5.status_code == 422 and r5.json()["results"][0]["reason_code"] == "CONFLICT"
+    assert one("SELECT value FROM telemetry_records WHERE asset_id=%s AND metric_id=(SELECT metric_id FROM metric_types WHERE name=%s) AND ts=%s",
+               asset["asset_id"], metric["name"], datetime.fromisoformat(t1.replace("Z", "+00:00")))["value"] == 15.0
+
+    # 6–7: timestamp syntax and future bound.
+    _, r6 = post([telemetry("2026-11-15T11:15:00+02:00")])
+    assert r6.status_code == 422 and r6.json()["results"][0]["reason_code"] == "INVALID_TIMESTAMP"
+    _, r7 = post([telemetry(z(datetime.now(timezone.utc) + timedelta(minutes=10)))])
+    assert r7.status_code == 422 and r7.json()["results"][0]["reason_code"] == "FUTURE_TIMESTAMP"
+
+    # 8–12: incompatible event, unit mismatch, unresolved external ID, invalid quality, invalid state.
+    camera = one("""SELECT a.asset_code FROM assets a JOIN system_types st USING(system_type_id)
+                   WHERE st.code='CCTV' ORDER BY a.asset_id LIMIT 1""")
+    incompatible = {"record_type": "event", "asset": {"asset_code": camera["asset_code"]},
+                    "observed_at": base_ts, "source_event_id": "cv-door-for-camera", "event_type": "door_forced"}
+    _, r8 = post([incompatible])
+    assert r8.status_code == 422 and r8.json()["results"][0]["reason_code"] == "EVENT_NOT_COMPATIBLE"
+    _, r9 = post([telemetry(z(now - timedelta(days=3)), unit="F")])
+    assert r9.status_code == 422 and r9.json()["results"][0]["reason_code"] == "UNIT_MISMATCH"
+    unmapped_id = "vendor-unmapped-" + uuid.uuid4().hex
+    unmapped_record = {**telemetry(z(now - timedelta(days=2))), "asset": {"external_id": unmapped_id}}
+    _, r10 = post([unmapped_record])
+    assert r10.status_code == 422 and r10.json()["results"][0]["reason_code"] == "ASSET_UNRESOLVED"
+    rej = one("SELECT source_id,external_id FROM ingestion_rejections WHERE external_id=%s", unmapped_id)
+    assert rej and rej["external_id"] == unmapped_id
+    unmapped_view = one("SELECT count,first_seen,last_seen FROM v_unmapped_external_assets WHERE source=%s AND external_id=%s",
+                        source_code, unmapped_id)
+    assert unmapped_view and unmapped_view["count"] == 1 and unmapped_view["first_seen"]
+    _, r11 = post([{**telemetry(z(now - timedelta(days=1))), "quality": "MISSING"}])
+    assert r11.status_code == 422 and r11.json()["results"][0]["reason_code"] == "SCHEMA_INVALID"
+    _, r12 = post([{"record_type": "state", "asset": {"asset_code": asset["asset_code"]},
+                    "observed_at": base_ts, "communication_status": "OFFLINE"}])
+    assert r12.status_code == 422 and r12.json()["results"][0]["reason_code"] == "SCHEMA_INVALID"
+
+    # 13: 1000 records, 10 rejected, all accepted records and rejection audit commit together.
+    bulk_records = []
+    bulk_start = now - timedelta(days=30)
+    for i in range(1000):
+        record = telemetry(z(bulk_start + timedelta(seconds=i)), value=100.0 + i)
+        if i % 100 == 0:
+            record["unit"] = "not-a-unit"
+        bulk_records.append(record)
+    p13, r13 = post(bulk_records)
+    assert r13.status_code == 200 and r13.json()["status"] == "PARTIAL"
+    assert r13.json()["counts"] == {"received": 1000, "accepted": 990, "duplicate": 0, "rejected": 10}, r13.text
+
+    # 14–16: size, source mismatch, and keepalive/liveness.
+    _, r14 = post([{} for _ in range(5001)])
+    assert r14.status_code == 413 and r14.json()["error"]["code"] == "BATCH_TOO_LARGE"
+    p15 = batch([], source={"source_code": "wrong-source", "connector": {"name": "conformance", "version": "1"}})
+    r15 = client.post("/api/v1/ingest/batches", json=p15, headers=auth)
+    assert r15.status_code == 403 and r15.json()["error"]["code"] == "SOURCE_MISMATCH"
+    before_live = one("SELECT last_received_at FROM data_sources WHERE source_code=%s", source_code)["last_received_at"]
+    p16, r16 = post([])
+    after_live = one("SELECT last_received_at FROM data_sources WHERE source_code=%s", source_code)["last_received_at"]
+    assert r16.status_code == 200 and r16.json()["status"] == "ACCEPTED" and after_live >= before_live
+    assert one("SELECT delivery_mode FROM ingestion_batches WHERE batch_id=%s", p16["batch_id"])["delivery_mode"] == "LIVE"
+
+    # Additional Step 0.4 conformance: auth, scope, code distinctions, time override, delivery diagnostics, quality.
+    missing_auth = client.post("/api/v1/ingest/batches", json=p16)
+    invalid_auth = client.post("/api/v1/ingest/batches", json=p16, headers={"Authorization": "Bearer invalid"})
+    assert missing_auth.status_code == 401 and missing_auth.json()["error"]["code"] == "AUTH_MISSING"
+    assert invalid_auth.status_code == 401 and invalid_auth.json()["error"]["code"] == "AUTH_INVALID"
+    DB.execute("UPDATE source_credentials SET scopes=ARRAY['ingest:telemetry']::text[] WHERE key_prefix=%s", (token.split("_")[1],))
+    _, scope_response = post([three[1]])
+    assert scope_response.json()["results"][0]["reason_code"] == "SCOPE_DENIED"
+    DB.execute("UPDATE source_credentials SET scopes=ARRAY['ingest:telemetry','ingest:event','ingest:state']::text[] WHERE key_prefix=%s", (token.split("_")[1],))
+
+    _, unknown_metric = post([{**telemetry(z(now - timedelta(hours=1))), "metric_code": "unknown_metric"}])
+    assert unknown_metric.json()["results"][0]["reason_code"] == "UNKNOWN_METRIC"
+    _, incompatible_metric = post([{**telemetry(z(now - timedelta(hours=2))), "metric_code": "camera_fps", "unit": "fps"}])
+    assert incompatible_metric.json()["results"][0]["reason_code"] == "METRIC_NOT_COMPATIBLE"
+    _, unknown_event = post([{**three[1], "source_event_id": "cv-unknown-event", "event_type": "not_registered"}])
+    assert unknown_event.json()["results"][0]["reason_code"] == "UNKNOWN_EVENT_TYPE"
+
+    other_building_asset = one("""SELECT a.asset_code FROM assets a JOIN locations l USING(location_id)
+                                WHERE l.building_id<>%s LIMIT 1""", asset["building_id"])
+    _, not_permitted = post([{**telemetry(z(now - timedelta(hours=3))), "asset": {"asset_code": other_building_asset["asset_code"]}}])
+    assert not_permitted.json()["results"][0]["reason_code"] == "ASSET_NOT_PERMITTED"
+
+    too_old = z(now - timedelta(days=91))
+    _, old_default = post([telemetry(too_old)])
+    assert old_default.json()["results"][0]["reason_code"] == "TIMESTAMP_TOO_OLD"
+    _, at_default_limit = post([telemetry(z(now - timedelta(days=89, hours=23)))])
+    assert at_default_limit.status_code == 200 and at_default_limit.json()["counts"]["accepted"] == 1, at_default_limit.text
+    config = subprocess.run([sys.executable, "scripts/ingestion_admin.py", "set-backdate-limit",
+                             "--source-code", source_code, "--max-backdate-days", "120"],
+                            capture_output=True, text=True, env=os.environ.copy(), check=True)
+    assert "120 days" in config.stdout
+    _, override_ok = post([telemetry(too_old)])
+    assert override_ok.status_code == 200 and override_ok.json()["counts"]["accepted"] == 1
+    reset = subprocess.run([sys.executable, "scripts/ingestion_admin.py", "set-backdate-limit",
+                            "--source-code", source_code, "--use-default"],
+                           capture_output=True, text=True, env=os.environ.copy(), check=True)
+    assert "default (90 days)" in reset.stdout
+    assert one("SELECT max_backdate_days FROM data_sources WHERE source_code=%s", source_code)["max_backdate_days"] is None
+
+    connector_report = {"vendor_link": "CONNECTED", "buffered_records": 2, "dropped_records": 0}
+    p_status, r_status = post([], delivery_mode="BACKFILL", source={"source_code": source_code,
+                      "connector": {"name": "conformance", "version": "1"}, "connector_status": connector_report})
+    assert r_status.status_code == 200
+    stored_status = one("SELECT delivery_mode,connector_status FROM ingestion_batches WHERE batch_id=%s", p_status["batch_id"])
+    assert stored_status["delivery_mode"] == "BACKFILL" and stored_status["connector_status"] == connector_report
+    DB.execute("UPDATE data_sources SET status='DEGRADED' WHERE source_code=%s", (source_code,))
+    _, degraded_batch = post([])
+    assert degraded_batch.status_code == 200
+    DB.execute("UPDATE data_sources SET status='ACTIVE' WHERE source_code=%s", (source_code,))
+
+    DB.execute("UPDATE metric_types SET min_plausible=0,max_plausible=50 WHERE metric_id=(SELECT metric_id FROM metric_types WHERE name=%s)",
+               (metric["name"],))
+    p_bad, r_bad = post([telemetry(z(now - timedelta(minutes=3)), value=80),
+                         telemetry(z(now - timedelta(minutes=4)), value=-1)])
+    assert r_bad.status_code == 200 and r_bad.json()["counts"]["accepted"] == 2
+    assert sum(w["code"] == "OUT_OF_PLAUSIBLE_RANGE" for w in r_bad.json()["warnings"]) == 2
+    bad_rows = one("SELECT count(*) AS n FROM telemetry_records WHERE ingestion_batch_id=(SELECT ingestion_batch_id FROM ingestion_batches WHERE batch_id=%s) AND quality='BAD'",
+                   p_bad["batch_id"])
+    assert bad_rows["n"] == 2
+    assert one("SELECT count(*) AS n FROM v_telemetry_valid WHERE ingestion_batch_id=(SELECT ingestion_batch_id FROM ingestion_batches WHERE batch_id=%s)",
+               p_bad["batch_id"])["n"] == 0
+
+    # Immediate response is capped, while GET returns the complete rejection audit.
+    many_bad = [telemetry(z(now - timedelta(days=1) + timedelta(seconds=i)), unit="bad") for i in range(101)]
+    p_cap, r_cap = post(many_bad)
+    assert r_cap.status_code == 422 and len(r_cap.json()["rejected"]) == 100 and r_cap.json()["rejected_truncated"] is True
+    full = client.get(f"/api/v1/ingest/batches/{p_cap['batch_id']}", headers=auth)
+    assert full.status_code == 200 and len(full.json()["rejected"]) == 101 and full.json()["rejected_truncated"] is False
 
 
 if __name__ == "__main__":

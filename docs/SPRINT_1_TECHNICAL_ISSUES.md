@@ -3,7 +3,7 @@
 Prioritised technical issues and dependencies derived from the Day 1 review (`CORE_DATA_ARCHITECTURE.md` findings **F-xx**), reconciled with repository/runtime inspection on 18 November 2026.
 No deadlines, estimates or assignees are given: none are supported by evidence in the repository.
 
-> **Current scope note (19 November 2026):** migrations 006–007, the advisory-locked migration runner, per-source hashed credentials, source-scoped mapping, batch API, rejection audit, quality-aware readers, and event collision fix are implemented and tested in an isolated PostgreSQL project. The shared running database remains at its pre-006 schema. Older issue descriptions below are historical unless their status explicitly says current; use `INGESTION_CONTRACT.md` and `DATA_MIGRATION_PLAN.md` for the approved implementation.
+> **Current scope note (19 November 2026):** migrations 006–008, the advisory-locked migration runner, per-source hashed credentials, source-scoped mapping, batch API, rejection audit, quality-aware readers, and event collision fix are implemented and tested in an isolated PostgreSQL project. The shared running database remains at its pre-006 schema. Older issue descriptions below are historical unless their status explicitly says current; use `INGESTION_CONTRACT.md` and `DATA_MIGRATION_PLAN.md` for the approved implementation.
 
 | Priority | Meaning |
 |---|---|
@@ -80,9 +80,9 @@ flowchart TD
 
 ### ISS-002 — No migration runner or schema versioning
 - **Priority:** P0 · **Status:** Migration 006 and runner implemented; shared DB not yet migrated. · **Phase:** M1
-- **Situation / evidence:** migration 006 adds `schema_migrations`; `scripts/apply_migrations.py` applies unapplied 006+ files under an advisory lock. Fresh Compose initialization mounts migrations 006–007.
+- **Situation / evidence:** migration 006 adds `schema_migrations`; `scripts/apply_migrations.py` applies unapplied 006+ files under an advisory lock. Fresh Compose initialization mounts migrations 006–008.
 - **Action:** operator reviews backup/target and runs the documented migration command when deploying. Init mounts do not upgrade an existing volume.
-- **Acceptance:** **Code/schema acceptance passed in isolated DB** (20 tables, 7 views; migration applied twice); shared DB upgrade remains a deployment action.
+- **Acceptance:** **Code/schema acceptance passed in isolated DB** (20 tables, 8 views; migration applied twice); shared DB upgrade remains a deployment action.
 
 ### ISS-003 — Bandwidth unit mismatch silently disables alert rules
 - **Priority:** P0 · **Status:** code/documentation updated; regression verification passed on the current change.
@@ -99,7 +99,7 @@ flowchart TD
 ### ISS-004 — No ingestion path for the canonical contract (telemetry cannot be received)
 - **Priority:** P1 · **Status:** Implemented and API tested in an isolated database. · **Phase:** M4
 - **Situation / evidence:** `POST /api/v1/ingest/batches` accepts canonical telemetry/event/state records. The legacy `POST /events` and `POST /alerts` remain supported.
-- **Action:** no further architecture is authorized here. Expand contract coverage only within the approved v1 semantics; deploy migration 006 separately after operator review.
+- **Action:** no further architecture is authorized here. Expand contract coverage only within the approved v1 semantics; deploy migrations 006–008 separately after operator review.
 - **Verification:** partial outcomes, exact batch replay, changed-payload rejection, immutable telemetry conflict, rejection retrieval, and auth were exercised. Full frontend suite has one pre-existing CRAC dashboard expectation mismatch (recorded in the implementation report).
 
 ### ISS-005 — Building (and organization) identity missing on operational records

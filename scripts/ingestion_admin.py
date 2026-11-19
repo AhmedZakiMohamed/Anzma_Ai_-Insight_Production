@@ -58,6 +58,11 @@ def main() -> int:
     mapping.add_argument("--source-code", required=True)
     mapping.add_argument("--external-id", required=True)
     mapping.add_argument("--asset-code", required=True)
+    backdate = commands.add_parser("set-backdate-limit", help="set or clear a source's maximum accepted back-date")
+    backdate.add_argument("--source-code", required=True)
+    backdate_limit = backdate.add_mutually_exclusive_group(required=True)
+    backdate_limit.add_argument("--max-backdate-days", type=int, choices=range(0, 36501))
+    backdate_limit.add_argument("--use-default", action="store_true", help="clear the override; default is 90 days")
     args = parser.parse_args()
 
     conn = connect()
@@ -109,6 +114,16 @@ def main() -> int:
                     raise ValueError("Active credential not found for that source and prefix.")
                 conn.commit()
                 print(f"Revoked key prefix {args.key_prefix} for {args.source_code}.")
+            elif args.command == "set-backdate-limit":
+                cur.execute("""UPDATE data_sources SET max_backdate_days=%s WHERE source_code=%s
+                               RETURNING max_backdate_days""",
+                            (None if args.use_default else args.max_backdate_days, args.source_code))
+                row = cur.fetchone()
+                if row is None:
+                    raise ValueError("Unknown source code.")
+                conn.commit()
+                value = "default (90 days)" if row["max_backdate_days"] is None else f"{row['max_backdate_days']} days"
+                print(f"Back-date limit for {args.source_code}: {value}.")
             else:
                 cur.execute("SELECT source_id, building_id FROM data_sources WHERE source_code = %s", (args.source_code,))
                 source = cur.fetchone()

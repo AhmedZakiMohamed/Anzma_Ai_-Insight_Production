@@ -67,7 +67,9 @@ One endpoint carries all three record types (`record_type` discriminates) so the
 | Time zones | Connectors convert to UTC before sending. A timestamp with any offset (`+02:00`) or without `Z` is **rejected** (`INVALID_TIMESTAMP`), not silently converted. The original local time may be kept in `source_metadata.original_time`. Display time zones are a Core/UI concern (building time zone). |
 | Future data | `observed_at` must be ≤ `received_at + 5 min` (same tolerance `POST /events` uses today). Otherwise `FUTURE_TIMESTAMP`. |
 | Too old | No age cutoff is enforced by v1; valid late/backfill records are accepted subject to natural-key conflict rules. |
-| Late-arriving data | **Accepted**, never rejected for lateness alone. A record is *late* when `received_at − observed_at` exceeds the source's delay threshold (default 15 min **[Proposed]**). Lateness is derived, not stored. Late data never rewrites existing samples. Detection runs are idempotent, so late records are evaluated on the next run. |
+| Late-arriving data | Accepted within the configured maximum back-date; records older than the limit are rejected `TIMESTAMP_TOO_OLD` (default 90 days, nullable per-source override). A record is *late* when `received_at − observed_at` exceeds the separate source delay threshold (default 15 min **[Proposed]**). Lateness is derived, not stored. Late data never rewrites existing samples. |
+
+An operator can configure/reset the source override with `python scripts/ingestion_admin.py set-backdate-limit --source-code SOURCE --max-backdate-days N` or `--use-default` (90 days).
 | Ordering | Records may arrive in any order. The Core orders by `observed_at`. |
 | Precision | Retries must reproduce `observed_at` **exactly**, including fractional seconds, or the retry is a different record. |
 
@@ -417,9 +419,9 @@ JSON Schema (draft 2020-12):
 | `delivery_mode` | no | `LIVE` (default) or `BACKFILL` (store-and-forward replay after an outage). Informational: it never makes an asset look fresh (§9). |
 | `source.source_code` | yes | Must equal the source bound to the API key, else `403 SOURCE_MISMATCH`. |
 | `source.connector` | yes | Name and version, for diagnostics and audit. |
-| `source.connector_status` | no | Optional diagnostics: `vendor_link`, `buffered_records`, `dropped_records`, `last_poll_at`. Lets the Core tell "the connector lost its vendor system" from "one device went quiet". **[Proposed]** |
+| `source.connector_status` | no | Optional JSON object (≤8 KiB) with diagnostics such as `vendor_link`, `buffered_records`, `dropped_records`, and `last_poll_at`; persisted on `ingestion_batches`. |
 | `building_code` | yes | One batch serves one building. A connector serving two buildings registers two sources (per `CANONICAL_DATA_MODEL.md` §12). |
-| `records` | yes | `0..5000` items. An empty array is a **keepalive**: it updates source liveness and nothing else **[Proposed]**. |
+| `records` | yes | `0..5000` items. An empty array is a **keepalive**: it updates source liveness and nothing else. |
 
 > **Implementation note.** The schema above nests all three record schemas under `records.items` for readability. The Core validates the envelope with `records` as opaque objects, then validates **each record on its own** by `record_type`, so one bad record produces one rejection instead of failing the batch.
 
@@ -437,7 +439,7 @@ Sensor readings: temperature, pressure, humidity, power, packet loss, and so on.
 | `asset` | yes | object | Exactly one of `asset_code` or `external_id`. |
 | `metric_code` | yes | string | Must exist in `metric_types` and be allowed for the asset's system (`metric_type_system_compat`). |
 | `value` | yes | number | Finite. |
-| `unit` | yes | string | Must **equal** the metric's canonical unit (`metric_types.unit`). **[Proposed]** v1 has no Core-side unit conversion: the connector converts, a wrong unit is `UNIT_MISMATCH`. |
+| `unit` | yes | string | Must **equal** the metric's canonical unit (`metric_types.unit`). v1 has no Core-side unit conversion: the connector converts, a wrong unit is `UNIT_MISMATCH`. |
 | `observed_at` | yes | string | §3. |
 | `quality` | no | enum | `GOOD` (default), `UNCERTAIN`, `BAD`. See §7. |
 | `source_metadata` | no | object | Raw value/unit/reference for audit. |
@@ -497,7 +499,7 @@ Full rules in `CONNECTOR_ARCHITECTURE.md` §7. Contract-level rules:
 
 Resolution: `(source, external_id)` → asset through `asset_external_ids`. An `asset_code` is accepted only for assets in the source's own building.
 
-**Unmapped devices [Proposed].** A record whose `external_id` has no mapping is **rejected** with `ASSET_UNRESOLVED`. The Core does **not** auto-create assets. The rejected payload is kept in `ingestion_rejections`, and an "unmapped external IDs" view (source, external_id, count, first/last seen) tells an administrator what to map. After mapping, the connector (or a replay tool) resends the records in a **new** batch.
+**Unmapped devices.** A record whose `external_id` has no mapping is **rejected** with `ASSET_UNRESOLVED`. The Core does **not** auto-create assets. The rejected payload plus `source_id` and `external_id` are kept in `ingestion_rejections`; `v_unmapped_external_assets` reports source, external ID, count, first seen, and last seen. After mapping, the connector (or a replay tool) resends the records in a **new** batch. `ASSET_NOT_PERMITTED` is returned when a known asset resolves outside the authenticated source's building.
 
 ---
 
@@ -511,7 +513,7 @@ Exactly three values **[Decided, D1]**.
 | `UNCERTAIN` | Valid, but the source flags low confidence (sensor warming up, substituted value). | Included by default; evidence is marked as uncertain. |
 | `BAD` | Structurally valid but unusable (source-declared bad, or outside the metric's plausible range as judged by the Core). | Stored for audit; **excluded** from KPIs and alerts. |
 
-**Missing data is not a quality value.** `MISSING` is not accepted. A value that was not obtained is the *absence* of a record, detected by the Core from freshness and gap analysis (§9). A connector that knows a value is unavailable simply sends no record for it, and reports a degraded link through `connector_status` if relevant.
+**Missing data is not a quality value.** `MISSING` is not accepted. A value that was not obtained is the *absence* of a record, detected by the Core from freshness and gap analysis (§9). A connector that knows a value is unavailable simply sends no record for it, and reports a degraded link through `connector_status` if relevant. `metric_types.min_plausible` and `max_plausible` are optional bounds; an otherwise valid value outside a configured bound is stored with `quality=BAD` and an `OUT_OF_PLAUSIBLE_RANGE` warning, and the valid telemetry view excludes it from operational readers.
 
 Invalid data (bad schema, unknown asset/metric, wrong unit, non-finite value) is **rejected**, never stored as `BAD`.
 
@@ -595,7 +597,7 @@ Each record is validated in this order; the first failure rejects it.
 5. Metric / event type known → `UNKNOWN_METRIC` / `UNKNOWN_EVENT_TYPE`
 6. Compatible with the asset's system → `METRIC_NOT_COMPATIBLE` / `EVENT_NOT_COMPATIBLE`
 7. Unit equals canonical unit → `UNIT_MISMATCH`
-8. Timestamp format → `INVALID_TIMESTAMP`; not future → `FUTURE_TIMESTAMP`; not too old → `TIMESTAMP_TOO_OLD`
+8. Timestamp format → `INVALID_TIMESTAMP`; not future → `FUTURE_TIMESTAMP`; not too old → `TIMESTAMP_TOO_OLD` (default maximum back-date 90 days; nullable `data_sources.max_backdate_days` overrides per source)
 9. Value finite → `INVALID_VALUE`
 10. Size limits → `PAYLOAD_TOO_LARGE`
 11. Plausible range: outside `min_plausible`/`max_plausible` ⇒ **stored as `BAD`** with a warning, not rejected
@@ -607,7 +609,7 @@ Each record is validated in this order; the first failure rejects it.
 |---|---|
 | `UNKNOWN_RECORD_TYPE` | `record_type` is not `telemetry`, `event` or `state`. |
 | `SCHEMA_INVALID` | Missing/wrong-typed field or invalid enum. `message` names the field path. |
-| `SCOPE_DENIED` | The key lacks the scope for this record type. |
+| `SCOPE_DENIED` | The key lacks the scope for this record type. This spelling is canonical; code does not emit `SCOPE_FORBIDDEN`. |
 | `ASSET_UNRESOLVED` | `external_id` has no mapping for this source, or `asset_code` unknown. |
 | `ASSET_NOT_PERMITTED` | Asset belongs to another building than the source. |
 | `UNKNOWN_METRIC` / `UNKNOWN_EVENT_TYPE` | Code not registered. |
@@ -625,7 +627,7 @@ Each record is validated in this order; the first failure rejects it.
 | HTTP | Code | Retry with same `batch_id`? |
 |---|---|---|
 | 400 | `INVALID_CONTENT_LENGTH` | No — fix the request |
-| 401 | `AUTH_INVALID` | No — fix credentials |
+| 401 | `AUTH_MISSING` / `AUTH_INVALID` | No — supply a key / fix credentials |
 | 403 | `SOURCE_MISMATCH`, `SOURCE_DISABLED` | No |
 | 409 | `BATCH_ID_REUSED` | No — use a new `batch_id` |
 | 413 | `BATCH_TOO_LARGE` | No — split the batch |
@@ -646,7 +648,7 @@ Each record is validated in this order; the first failure rejects it.
 | Scopes | `ingest:telemetry`, `ingest:event`, `ingest:state`. Checked per record. |
 | Lifecycle | Expiry is optional; revocation is immediate; multiple active keys per source support rotation; `last_used_at` is recorded. |
 | Disabled source | `status = DISABLED/ERROR` or revoked key ⇒ `403 SOURCE_DISABLED`. |
-| Errors | Never reveal whether a source exists. A bad key is `401 AUTH_INVALID`. |
+| Errors | Never reveal whether a source exists. Missing Authorization is `401 AUTH_MISSING`; a malformed, unknown, revoked, or expired key is `401 AUTH_INVALID` or `403 SOURCE_DISABLED` as applicable. |
 | Development | Provision a source key with `scripts/ingestion_admin.py`; there is no unauthenticated development bypass. |
 
 **Context.** The existing API, Socket.IO and database port currently have no authentication (ISS-015). Ingestion must be the first protected surface even if the rest is not yet.
@@ -655,7 +657,7 @@ Each record is validated in this order; the first failure rejects it.
 
 ## 12. Responses
 
-All batch responses share one shape. `rejected[]` lists at most 100 entries; when more exist, `rejected_truncated` is `true` and the complete list is available through `GET /api/v1/ingest/batches/{batch_id}`.
+All batch responses share one shape. `rejected[]` lists at most 100 entries; when more exist, `rejected_truncated` is `true` and the complete list (including payload and external ID when present) is available through `GET /api/v1/ingest/batches/{batch_id}`. Migration 008 persists `delivery_mode`, `connector_status`, rejection source/external identifiers, optional per-source maximum back-date, and optional metric plausibility bounds.
 
 ### 12.1 Fully accepted — `200`
 
@@ -720,7 +722,7 @@ Same body, `"status": "REJECTED"`, `counts.accepted = 0` and at least one reject
 }
 ```
 
-Database-unavailable `503` responses set `retryable: true`; retry the same `batch_id`. Schema-not-applied `503` requires migration 006 before retrying. A replay of an already committed exact batch returns the saved response with `Idempotent-Replay: true`.
+Database-unavailable `503` responses set `retryable: true`; retry the same `batch_id`. Schema-not-applied `503` requires migrations 006–008 before retrying. A replay of an already committed exact batch returns the saved response with `Idempotent-Replay: true`.
 
 ### 12.5 Connector retry rule of thumb
 
@@ -728,7 +730,7 @@ Database-unavailable `503` responses set `retryable: true`; retry the same `batc
 |---|---|
 | `200` (`ACCEPTED` / `PARTIAL`) | Done. Keep rejected records for operator review; do not resend them unchanged. |
 | `422`, `400`, `401`, `403`, `409`, `413` | Do not retry blindly. Fix the cause (credentials, mapping, payload, size). |
-| Database `503`, network error | Retry the **same batch with the same `batch_id`** and exponential backoff with jitter. For schema-not-applied `503`, wait until migration 006 is deployed. |
+| Database `503`, network error | Retry the **same batch with the same `batch_id`** and exponential backoff with jitter. For schema-not-applied `503`, wait until migrations 006–008 are deployed. |
 
 ---
 
@@ -845,7 +847,7 @@ A connector is not considered ready until its tests reproduce these outcomes aga
 | 15 | Wrong `source_code` for the key | `403 SOURCE_MISMATCH` |
 | 16 | 0 records, valid key | `200`, source liveness updated |
 
-Vectors 1, 3, 6–9, 11, 12, 14 were exercised against the JSON Schemas in this document with a throw-away checker (schema-level outcomes only). Everything that needs a database (2, 4, 5, 10, 13, 15, 16) is **untested** until the ingestion service exists.
+All 16 vectors in §13.3 have database-backed automated coverage in `tests/integration/test_frontend_api.py`; run with `python tests/integration/test_frontend_api.py`. All 16 passed against the disposable PostgreSQL database on 19 November 2026. The same run covers the additional 0.4 reason-code, authentication, back-date, delivery diagnostics, rejection audit/cap, and plausibility-range behaviors.
 
 ---
 
@@ -875,11 +877,11 @@ Vectors 1, 3, 6–9, 11, 12, 14 were exercised against the JSON Schemas in this 
 | D4 | One bad record in a batch? | Partial acceptance with per-record reasons. | Decided |
 | D5 | Connector authentication? | Hashed bearer API key per source, scoped, revocable, and rotatable. | Decided and implemented |
 | P1 | `event_time` as a separate field? | No; `observed_at` is the event time. | Proposed |
-| P2 | Endpoint layout | Single batch endpoint; per-type endpoints deferred. | Proposed |
-| P3 | Empty batch | Allowed as keepalive. | Proposed |
-| P4 | Unmapped external asset | Reject `ASSET_UNRESOLVED`; no auto-create. | Proposed |
-| P5 | Unit conversion in Core | Deferred; connector converts. | Proposed |
-| P6 | `source_event_id` | Required for events. | Proposed |
+| P2 | Endpoint layout | Single versioned batch endpoint; per-type endpoints deferred. | Implemented |
+| P3 | Empty batch | Allowed as keepalive. | Implemented |
+| P4 | Unmapped external asset | Reject `ASSET_UNRESOLVED`; no auto-create; audit/view support. | Implemented |
+| P5 | Unit conversion in Core | Deferred; connector converts. | Decided (deferred) |
+| P6 | `source_event_id` | Required for events. | Implemented |
 | P7 | Maximum back-date | No age cutoff in v1; natural-key conflict handling still applies. | Decided |
 | P8 | Path prefix `/api/v1` | `/api/v1/ingest/batches` and source-scoped batch lookup. | Decided and implemented |
 | P9 | Sanctioned value corrections | Not in v1. | Open |

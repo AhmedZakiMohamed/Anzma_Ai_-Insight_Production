@@ -4,7 +4,7 @@ exist with their columns, that migrations 005/006 constraints hold, and pins the
 CURRENT behaviour of the *_compat tables (not enforced by the database).
 
 Builds a throw-away database (anzma_integrity_test) with the official sequence:
-  db/init/anzma_schema_and_seed.sql -> 003_incidents.sql -> 004_chat_views.sql -> 005_alert_uniqueness.sql -> 006_ingestion_foundation.sql -> 007_event_source_identity.sql
+  db/init/anzma_schema_and_seed.sql -> 003_incidents.sql -> 004_chat_views.sql -> 005_alert_uniqueness.sql -> 006_ingestion_foundation.sql -> 007_event_source_identity.sql -> 008_ingestion_contract_conformance.sql
 (migrations are applied twice to prove idempotency). Never touches any other database.
 
 Run:  python test_data_integrity.py      (needs a reachable PostgreSQL; PGHOST/PGPORT/PGUSER/PGPASSWORD as in the other tests)
@@ -28,7 +28,8 @@ SEQUENCE = [os.path.join(REPO, "db", "init", "anzma_schema_and_seed.sql"),
             os.path.join(ROOT, "db", "migrations", "004_chat_views.sql"),
             os.path.join(ROOT, "db", "migrations", "005_alert_uniqueness.sql"),
             os.path.join(ROOT, "db", "migrations", "006_ingestion_foundation.sql"),
-            os.path.join(ROOT, "db", "migrations", "007_event_source_identity.sql")]
+            os.path.join(ROOT, "db", "migrations", "007_event_source_identity.sql"),
+            os.path.join(ROOT, "db", "migrations", "008_ingestion_contract_conformance.sql")]
 CHECK, FK, UNIQUE, NOTNULL = "23514", "23503", "23505", "23502"
 T0 = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
 
@@ -45,6 +46,7 @@ VIEW_COLUMNS = {
                           "quality", "ingestion_batch_id", "contract_version", "source_metadata"},
     "v_asset_current_state": {"state_id", "source_id", "asset_id", "observed_at", "received_at", "reported_state",
                               "availability", "reason_code", "message"},
+    "v_unmapped_external_assets": {"source_id", "source", "external_id", "count", "first_seen", "last_seen"},
 }
 
 
@@ -119,15 +121,15 @@ def alert_params(rule="R1", method="threshold", sev="warning", asset=None, first
     return (rule, method, sev, asset or ASSET, first, last or first, first, status, resolved)
 
 
-@test("clean install: sequence applied, 20 tables and 7 views exist")
+@test("clean install: sequence applied, 20 tables and 8 views exist")
 def _():
     n = one("SELECT count(*) AS n FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'")["n"]
     assert n == 20, n
     v = one("SELECT count(*) AS n FROM information_schema.views WHERE table_schema='public'")["n"]
-    assert v == 7, v
+    assert v == 8, v
 
 
-@test("views: all seven exist, are queryable and have exactly the documented columns")
+@test("views: all eight exist, are queryable and have exactly the documented columns")
 def _():
     for view, cols in VIEW_COLUMNS.items():
         CUR.execute(f"SELECT * FROM {view} LIMIT 0")
@@ -139,6 +141,16 @@ def _():
 def _():
     assert one("SELECT count(*) AS n FROM telemetry_records")["n"] > 0
     assert one("SELECT count(*) AS n FROM telemetry_records WHERE source_id IS NOT NULL OR quality IS NOT NULL")["n"] == 0
+
+
+@test("008 is additive: per-source, batch, rejection and plausibility fields preserve legacy facts")
+def _():
+    assert one("SELECT count(*) AS n FROM telemetry_records WHERE source_id IS NOT NULL OR quality IS NOT NULL")["n"] == 0
+    assert one("SELECT count(*) AS n FROM metric_types WHERE min_plausible IS NOT NULL OR max_plausible IS NOT NULL")["n"] == 0
+    assert one("SELECT count(*) AS n FROM information_schema.columns WHERE table_name='ingestion_rejections' AND column_name IN ('source_id','external_id')")["n"] == 2
+    assert one("SELECT count(*) AS n FROM information_schema.columns WHERE table_name='ingestion_batches' AND column_name IN ('delivery_mode','connector_status')")["n"] == 2
+    metric_id = first_id("metric_types", "metric_id")
+    expect_rejected("UPDATE metric_types SET min_plausible=10,max_plausible=5 WHERE metric_id=%s", (metric_id,), CHECK)
 
 
 @test("006 credentials and source-scoped mapping constraints reject invalid rows")

@@ -292,6 +292,7 @@ class IngestionSource(BaseModel):
     model_config = ConfigDict(extra="allow")
     source_code: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
     connector: IngestionConnector
+    connector_status: dict[str, Any] | None = None
 
 
 class IngestionBatch(BaseModel):
@@ -329,14 +330,14 @@ class IngestionBatch(BaseModel):
     @field_validator("records")
     @classmethod
     def _record_count(cls, value):
-        if len(value) > ingestion.MAX_RECORDS:
-            raise ValueError("records must contain no more than 5000 items")
         return value
 
 
 def _ingestion_schema_ready(cur):
-    cur.execute("SELECT to_regclass('public.data_sources') AS sources")
-    return cur.fetchone()["sources"] is not None
+    cur.execute("""SELECT to_regclass('public.data_sources') AS sources,
+                          to_regclass('public.v_unmapped_external_assets') AS unmapped""")
+    row = cur.fetchone()
+    return row["sources"] is not None and row["unmapped"] is not None
 
 
 def _ingestion_error_response(exc: ingestion.IngestionError):
@@ -368,7 +369,7 @@ def ingest_batch(body: IngestionBatch, request: Request,
             with conn.cursor() as cur:
                 if not _ingestion_schema_ready(cur):
                     raise ingestion.IngestionError(503, "INGESTION_SCHEMA_NOT_APPLIED",
-                                                   "Apply database migration 006 before using Core ingestion.",
+                                                   "Apply database migrations 006–008 before using Core ingestion.",
                                                    retryable=False, batch_id=batch_id)
                 source = ingestion.authenticate(cur, authorization)
                 try:
@@ -404,7 +405,7 @@ def get_ingestion_batch(batch_id: str, authorization: str | None = Header(defaul
             with conn.cursor() as cur:
                 if not _ingestion_schema_ready(cur):
                     raise ingestion.IngestionError(503, "INGESTION_SCHEMA_NOT_APPLIED",
-                                                   "Apply database migration 006 before using Core ingestion.",
+                                                   "Apply database migrations 006–008 before using Core ingestion.",
                                                    retryable=False, batch_id=batch_id)
                 source = ingestion.authenticate(cur, authorization)
                 cur.execute("""SELECT response_payload FROM ingestion_batches
@@ -414,11 +415,14 @@ def get_ingestion_batch(batch_id: str, authorization: str | None = Header(defaul
                     raise ingestion.IngestionError(404, "BATCH_NOT_FOUND", "Batch was not found for this source.",
                                                    batch_id=str(batch_uuid))
                 result = dict(row["response_payload"])
-                cur.execute("""SELECT record_index,record_type,reason_code,message,payload
+                cur.execute("""SELECT record_index,record_type,reason_code,message,payload,external_id
                                FROM ingestion_rejections WHERE ingestion_batch_id=
                                (SELECT ingestion_batch_id FROM ingestion_batches WHERE source_id=%s AND batch_id=%s)
                                ORDER BY record_index""", (source["source_id"], batch_uuid))
-                result["rejected"] = [dict(item) for item in cur.fetchall()]
+                result["rejected"] = [{"index": item["record_index"], "record_type": item["record_type"],
+                                        "reason_code": item["reason_code"], "message": item["message"],
+                                        "payload": item["payload"], "external_id": item["external_id"]}
+                                       for item in cur.fetchall()]
                 result["rejected_truncated"] = False
                 conn.commit()
                 return result

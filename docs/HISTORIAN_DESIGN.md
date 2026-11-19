@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Status** | Historian design plus implemented ingestion foundation. Migrations 006–007 add provenance/quality fields, append-only state facts, and source-aware event identity; freshness/gap tracking, retention, and rollups remain future work. |
-| **Baseline** | PostgreSQL 16; migrations 006–007 are included for fresh volumes and can be applied additively to existing volumes with the documented runner. The shared database was not migrated. |
+| **Status** | Historian design plus implemented ingestion foundation. Migrations 006–008 add provenance/quality fields, append-only state facts, and source-aware event identity; freshness/gap tracking, retention, and rollups remain future work. |
+| **Baseline** | PostgreSQL 16; migrations 006–008 are included for fresh volumes and can be applied additively to existing volumes with the documented runner. The shared database was not migrated. |
 | **Related** | `CANONICAL_DATA_MODEL.md` (entities/columns named here), `DATA_MIGRATION_PLAN.md`, `SPRINT_1_TECHNICAL_ISSUES.md` |
 
 Entities marked *(proposed)* are defined in `CANONICAL_DATA_MODEL.md`. SQL below is **illustrative query design**, not a migration; column names that do not exist today are marked *(proposed)*.
@@ -44,14 +44,14 @@ The Historian is **not** a separate service or database in Day 1: it is a set of
 
 Step contract (Core side):
 
-1. **Receive** a batch; stamp `received_at` = platform clock; create an `ingestion_batches` row keyed by `(source_id, client_batch_id)` — a replayed batch returns the stored result.
-2. **Validate** each record (order in `CANONICAL_DATA_MODEL.md` §6): schema → source/building → asset resolution → metric/event type → system compatibility → unit → timestamp (UTC `Z`, ≤ `received_at + 5 min`) → finite value → plausible range.
+1. **Receive** a batch; stamp `received_at` = platform clock; create an `ingestion_batches` row keyed by `(source_id, batch_id)` — a replayed batch returns the stored result.
+2. **Validate** each record (order in `INGESTION_CONTRACT.md` §10): schema/scope → asset permission → registered and compatible metric/event → unit → timestamp (UTC `Z`, future tolerance and per-source maximum back-date) → value and plausibility.
 3. **Persist** accepted records in one transaction per batch using `INSERT … ON CONFLICT DO NOTHING`; classify each outcome `accepted | duplicate | rejected`.
 4. **Record** rejections (`reason_code`, payload) in `ingestion_rejections`.
 5. **Update** `data_sources.last_success_at` / `last_error_*`.
-6. **Return** per-record results (open decision Q4: atomic vs per-record; this design assumes per-record).
+6. **Return** per-record results. Accepted facts, batch response, and rejection audit commit in one transaction; `200 PARTIAL` and `422 REJECTED` both state that the batch transaction committed.
 
-Existing path kept during transition: seed SQL and `POST /events` continue to write to the same tables; rows without `source_id` are treated as source `legacy-seed`.
+Existing path kept during transition: seed SQL and `POST /events` continue to write to the same tables; legacy fact rows remain source-less (`source_id IS NULL`) unless explicitly provisioned later.
 
 ---
 
@@ -197,7 +197,7 @@ Inputs: `reporting_expectations.expected_interval_s` (E) per asset/metric, `rece
 | **Delayed ingestion** | `received_at − ts` above a per-source threshold | derived `is_late`, per-source latency stats; no state change |
 | **Communication failure** | all liveness series of an asset (or the whole source) beyond `missing_factor × E`, or `data_sources.status` in (`ERROR`,`DISABLED`) | `communication_status=LOST` (or `UNKNOWN` with `SOURCE_ERROR`); **`availability` unchanged** |
 | **Irregular sampling** | spacing coefficient of variation or share of intervals outside `[0.5E, 1.5E]` over a window | reported by the gap query; informational |
-| **Source-declared missing** | connector sends `quality=MISSING` | `data_gaps` cause `SOURCE_DECLARED_MISSING` |
+| **Missing observation** | connector omits the record; v1 rejects `quality=MISSING` | freshness/gap derivation is future work; no `data_gaps` row is written in v1 |
 
 Illustrative gap query (history):
 
@@ -253,7 +253,7 @@ Design requirement: ingestion must never block the intelligence loop; the detect
 
 | Record | Idempotency key | Behaviour |
 |---|---|---|
-| Batch | `(source_id, client_batch_id)` (`ingestion_batches`) | Replay returns the original result; no side effects |
+| Batch | `(source_id, batch_id)` (`ingestion_batches`) | Replay returns the original result; no side effects |
 | Telemetry | `(asset_id, metric_id, ts)` (existing UNIQUE) | same value → `duplicate`; different value → `CONFLICT` rejection, first write kept (**[Open]**: allow sanctioned corrections?) |
 | Event | `(source_id, source_event_id)` (new partial UNIQUE) else legacy `(asset_id, event_type_id, ts)` | `duplicate` |
 | State report | `(asset_id, observed_at, source_id)` | `duplicate` |
@@ -304,7 +304,7 @@ Phases are sequencing only — **no dates or owners are assigned**.
 |---|---|---|
 | H0 — Baseline | Golden-output capture of KPI/alerts/incidents/evidence on a copy of the database; backup/restore rehearsal | Baseline stored; restore verified |
 | H1 — Foundation schema | Additive columns/tables (`building_id`, provenance, `data_sources`, `ingestion_*`, `reporting_expectations`); backfill; compatibility views; migration runner | Existing tests + parity checks green; no behaviour change |
-| H2 — Ingestion service | Canonical contract endpoint (telemetry/event/state), validation, idempotency, rejections, `ingestion_batches`; feature flag | Contract tests; replay/retry tests; legacy `POST /events` unchanged |
+| H2 — Ingestion service | Implemented by migrations 006–008 and `/api/v1/ingest/batches`; legacy `POST /events` remains | Conformance vectors and regression evidence are in `INGESTION_CONTRACT.md` and `PRODUCTIZATION_IMPLEMENTATION_REPORT.md` |
 | H3 — State & freshness | `asset_state_current/history`, freshness job, `data_gaps`, `series_freshness` | Camera-2 scenario verified; KPI output identical |
 | H4 — Historical query layer | `HistorianRepository` + building-aware views; endpoints reuse it; parity with `frontend_api.trends` | Parity tests |
 | H5 — Evidence & alert hardening | `alert_evidence` dual-write; unique alert index; advisory lock | Evidence verification unchanged (`test_day2_integration.py`) |

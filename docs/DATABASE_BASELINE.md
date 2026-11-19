@@ -1,10 +1,10 @@
 # DATABASE_BASELINE.md — single source of truth for the Anzma database
 
-Status legend: this document records the **pre-006 deployed baseline** and historical results below. The repository now adds migrations 006–007; their schema and upgrade procedure are documented in [DATA_MIGRATION_PLAN.md](DATA_MIGRATION_PLAN.md). The shared running database remains at its inspected pre-006 version until an operator applies them.
+Status legend: this document records the **pre-006 deployed baseline** and historical results below. The repository now adds migrations 006–008; their schema and upgrade procedure are documented in [DATA_MIGRATION_PLAN.md](DATA_MIGRATION_PLAN.md). The shared running database remains at its inspected pre-006 version until an operator applies them.
 
 ## 1. Authoritative architecture
 
-PostgreSQL 16 (Docker Compose, `postgres:16`). The pre-006 deployed baseline is **13 tables + 5 views**. New installs add migration 006 for **20 tables + 7 views** and migration 007 for event uniqueness indexes (table/view counts unchanged). Existing volumes require the explicit migration runner; Compose init scripts alone do not upgrade them.
+PostgreSQL 16 (Docker Compose, `postgres:16`). The pre-006 deployed baseline is **13 tables + 5 views**. Migration 006 adds seven tables and two views (20 tables + 7 views); 007 changes event uniqueness without changing counts; 008 adds `v_unmapped_external_assets` (20 tables + 8 views). Existing volumes require the explicit migration runner; Compose init scripts alone do not upgrade them.
 
 | # | File | Adds | State |
 |---|---|---|---|
@@ -14,6 +14,7 @@ PostgreSQL 16 (Docker Compose, `postgres:16`). The pre-006 deployed baseline is 
 | 4 | `db/migrations/005_alert_uniqueness.sql` | UNIQUE index `uq_alerts_rule_asset_first_ts` | present; verified on the fresh isolated test database: index exists and `verify_schema.sql` reports OVERALL OK (tested commit 441110d; see `test_logs/441110d/schema.txt`) |
 | 5 | `db/migrations/006_ingestion_foundation.sql` | source registry/key hashes, mappings, nullable provenance, batch/rejection audit, state facts, two views | implemented; migration and constraints passed in isolated test DB; not applied to shared DB |
 | 6 | `db/migrations/007_event_source_identity.sql` | replaces full legacy event unique constraint with source-aware partial keys | implemented; distinct source IDs and legacy duplicates tested in isolated DB; not applied to shared DB |
+| 7 | `db/migrations/008_ingestion_contract_conformance.sql` | date limit, batch diagnostics, rejection source/external identifiers and view, metric plausibility bounds | implemented; migration idempotence, API behavior, and schema verified in disposable DB; not applied to shared DB |
 
 Not authoritative: `data-model.sql` (22-table draft, not loaded by Compose). `db/init/anzma_schema_and_seed.sql` is the single bootstrap schema-and-seed file; tests use this path directly.
 
@@ -53,7 +54,7 @@ Other limitations: telemetry/event tables have no `received_at`, `source`, `qual
 
 ## 7. Clean install and deployment
 
-1. Compose runs init files only on an **empty** volume. The historical 2026-11-17 verification used migrations through 005 and confirmed the baseline schema (13 tables, 5 views). Current Compose adds 006–007 for new volumes.
+1. Compose runs init files only on an **empty** volume. The historical 2026-11-17 verification used migrations through 005 and confirmed the baseline schema (13 tables, 5 views). Current Compose adds 006–008 for new volumes.
 
 2. Existing databases are not upgraded by Compose init mounts. Use `scripts/apply_migrations.py` for unapplied migrations 006+ after backup and operator review. The shared DB was not migrated during implementation.
 

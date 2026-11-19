@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Document** | Week 3 / Day 1 — Data Architecture & Core Reliability |
-| **Status** | Historical runtime baseline plus implemented ingestion extensions in migrations 006–007. Other target architecture sections remain proposals unless marked implemented. |
+| **Status** | Historical runtime baseline plus implemented ingestion extensions in migrations 006–008. Other target architecture sections remain proposals unless marked implemented. |
 | **Source of truth** | Repository code/migrations on `feature/ingestion-foundation`, plus the separately recorded read-only inspection of the pre-006 running database. Migration 006 has not been applied to that existing database. |
 | **Related** | `CANONICAL_DATA_MODEL.md`, `HISTORIAN_DESIGN.md`, `DATA_MIGRATION_PLAN.md`, `SPRINT_1_TECHNICAL_ISSUES.md` |
 
@@ -20,7 +20,7 @@ Conventions used in all five documents:
 
 ## 1. Executive summary
 
-Anzma AI Insight today is a single-database, simulated-data application. The historical deployed schema has 13 tables and 5 views; new installs add seven tables and two views through migration 006, then source-aware event uniqueness through migration 007. The load order is:
+Anzma AI Insight today is a single-database, simulated-data application. The historical deployed schema has 13 tables and 5 views; migration 006 adds seven tables and two views, migration 007 changes event uniqueness, and migration 008 adds ingestion metadata and the unmapped-assets view. The load order is:
 
 1. `db/init/anzma_schema_and_seed.sql` — 12 tables + seed.
 2. `db/migrations/003_incidents.sql` — `incidents` table and `alerts.incident_id`.
@@ -28,6 +28,7 @@ Anzma AI Insight today is a single-database, simulated-data application. The his
 4. `db/migrations/005_alert_uniqueness.sql` — unique alert key used by `store_alerts`.
 5. `db/migrations/006_ingestion_foundation.sql` — sources/hashed credentials, scoped asset mappings, nullable fact provenance and quality, batch/rejection audit, state facts, and compatibility views.
 6. `db/migrations/007_event_source_identity.sql` — preserve the legacy event key only for rows without source IDs; source events are unique by `(source_id, source_event_id)`.
+7. `db/migrations/008_ingestion_contract_conformance.sql` — back-date policy, batch/source diagnostics, rejection lookup metadata/view, and optional plausibility bounds.
 
 The existing intelligence (KPI engine, alert engine, incident engine, evidence verification, grounding validation, chat assistant) is coherent and tested (`TEST_RESULTS_DAY2.txt`: 43/43 integration checks; `TEST_RESULTS_CHAT_CONSISTENCY.txt`: 31/31). **It should be preserved, not rewritten.**
 
@@ -121,7 +122,7 @@ Priority: P0 critical reliability/integrity · P1 required for productization fo
 
 | ID | File / object | Current behaviour | Problem | Recommendation | Pri | Impact if changed |
 |---|---|---|---|---|---|---|
-| F-01 | `app/main.py`, `app/services/ingestion.py` | Versioned batch route ingests canonical telemetry/event/state; existing `POST /events` and `POST /alerts` remain. | New route requires migration 006 and a provisioned source/key. | Implemented; route contract and operational limits are in `INGESTION_CONTRACT.md`. | Complete | Legacy endpoints unchanged |
+| F-01 | `app/main.py`, `app/services/ingestion.py` | Versioned batch route ingests canonical telemetry/event/state; existing `POST /events` and `POST /alerts` remain. | New route requires migrations 006–008 and a provisioned source/key. | Implemented; route contract and operational limits are in `INGESTION_CONTRACT.md`. | Complete | Legacy endpoints unchanged |
 | F-02 | `db/migrations/006_ingestion_foundation.sql` | Adds nullable `source_id`, `received_at`, `quality`, batch/version/metadata to facts; old records remain NULL. | Building still derives through assets/locations on facts; no per-fact building column was added. | Implemented as additive provenance; no historical backfill. | Complete | None |
 | F-03 | `alerts`, `incidents`; `dashboard_core_pg.SCOPE_CTE`; `app/api/frontend_api.py`; `004_chat_views.sql` | KPI summary accepts `building_id` through `dashboard_core_pg.SCOPE_CTE`; the dashboard overview/trends/equipment-health and alert/incident/chat query paths do not consistently accept an equivalent building scope. Facts derive building through assets/locations; no organization table exists. | The schema supports multiple buildings, but query scoping is incomplete; cross-building isolation is not provided. | Add consistent optional building scope through repositories and views while preserving the current all-building default and API response shapes. Organization isolation remains a separate deployment decision. | P1 | Existing default results stay all-building |
 | F-04 | `db_adapter.SYSTEM_TO_API`, `frontend_api.SYSTEM_TO_UI`/`SYSTEM_FROM_UI`, `reference_data.SYSTEM_CODES` | DB: `NETWORKING`, `ACCESS_CONTROL`, lower-case enums; engine/API: `NETWORK`, `ACCESS`, upper-case; `locations.name` ⇒ “zone”. Translation maps duplicated in two modules (+ `chat_facts.SYSTEM_WORDS`). | Three vocabularies; drift risk. | Canonical codes = DB codes; keep one translation module at the API edge. | P2 | Presentation only |
@@ -140,7 +141,7 @@ Priority: P0 critical reliability/integrity · P1 required for productization fo
 | F-17 | `app/domain/alerts/alert_engine.py` legacy functions | Some legacy functions refer to tables outside the runtime schema; active detection uses `app/adapters/database/db_adapter.py` and the current pipeline. | Dead/unused paths are easy to mistake for runtime behavior. | Keep the active pipeline path authoritative; remove dead functions only after import/call-site checks and tests. | P2 | None |
 | F-18 | `legacy/dashboard_api.py`, `legacy/chat_engine.py`, `legacy/chat_api.py` | These modules query an older schema and are outside the active `app.main` router registration. | Confusing duplicates can be mistaken for supported routes. | Retain as legacy until call sites and migration history are reviewed; do not treat them as the operational API. | P2 | None |
 | F-19 | `docs/data-model.sql`, `docs/DATA_MODEL.md`, ERD assets, `docs/ARCHITECTURE.md`, and API proposals | These describe earlier unified schemas and/or routes not mounted by the current application. `docs/DATA_MODEL.md` refers to a migration that is absent from this checkout. | Multiple drafts can be mistaken for the runtime model. | Treat the SQL bootstrap/migrations as runtime authority and this canonical model as the target proposal; keep older drafts clearly labeled and cross-linked. | P1 | None (docs) |
-| F-20 | `deploy/compose/docker-compose.yml`; `db/migrations/006`; `scripts/apply_migrations.py` | Fresh volumes initialize 003–007; existing databases need the advisory-locked runner for 006+. | Init mounts alone do not upgrade existing volumes. | Implemented; apply only after backup/review using the procedure in `DATA_MIGRATION_PLAN.md`. | Complete | Deployment procedure |
+| F-20 | `deploy/compose/docker-compose.yml`; `db/migrations/006`; `scripts/apply_migrations.py` | Fresh volumes initialize 003–008; existing databases need the advisory-locked runner for 006+. | Init mounts alone do not upgrade existing volumes. | Implemented; apply only after backup/review using the procedure in `DATA_MIGRATION_PLAN.md`. | Complete | Deployment procedure |
 | F-21 | `dashboard_core_pg.open_readonly`; `App.day2_connect`; `db_adapter.connect` | Three connection factories, two drivers (psycopg v3 and psycopg2). `open_readonly` is not actually read-only (comment only); default passwords `"change-me"` / `""`. No pooling. | Hygiene and security; per-request connections. | One connection module; genuine read-only role for read paths; env-required credentials. | P2 | None |
 | F-22 | `chat_lite._safe_sql`, `_run_readonly_sql` | LLM tool runs model-written SQL on the app connection (`SET TRANSACTION READ ONLY`, 5 s timeout, string blocklist, `LIMIT 200`). Unscoped by building. | String blocklist is brittle (false positives/negatives); no tenant scoping; uses the application user. | Dedicated read-only DB role + building-scoped views before multi-customer use. | P1 | Chat must keep answering from `v_*` views |
 | F-23 | `dashboard_core_pg` `heartbeat_compliance`; `alert_config.T['reading_gap_min']` | Hourly heartbeat and 15-minute cadence are global constants (`expected_slots = seconds // 3600 + 1`; `reading_gap_min=20`). | No per-asset expected interval; cannot represent assets that report every 5 s or every 6 h. | `reporting_expectations` per asset/metric. | P1 | KPI formula must still return the same value for current assets |
@@ -225,8 +226,8 @@ The Core must not import any vendor SDK and must not branch on vendor name. The 
 | Layer | Definition |
 |---|---|
 | **Pre-006 deployed baseline** | Base schema plus migrations 003–005: 13 tables and 5 views, verified read-only in the shared database on 18 November 2026. |
-| **Repository schema target** | The pre-006 schema plus migrations 006–007: 20 tables and 7 views, verified in an isolated test database. |
-| **Migration state** | Migrations 006–007 are included on fresh init and have an explicit runner for existing databases; the shared database has not been migrated. |
+| **Repository schema target** | The pre-006 schema plus migrations 006–008: 20 tables and 8 views, verified in an isolated test database. |
+| **Migration state** | Migrations 006–008 are included on fresh init and have an explicit runner for existing databases; the shared database has not been migrated. |
 | **Compatibility mechanisms** | Nullable additive columns; `v_telemetry_valid`; existing `db_adapter` translation; legacy APIs remain supported; isolated migration and route regressions. |
 | **Not authoritative** | `data-model.sql`, `DATA_MODEL.md`, `ERD-new.png`, `NEW-ERD.png`, `docs/ARCHITECTURE.md`, `docs/API_CONTRACT.md`, `dashboard_api.py`, `chat_engine.py`, `chat_api.py`, legacy functions in `alert_engine.py`. |
 

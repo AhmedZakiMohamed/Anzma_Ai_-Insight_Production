@@ -33,7 +33,7 @@ flowchart LR
     TRENDS --> DASH
 ```
 
-The database stores telemetry and event observations separately. Both belong to an asset, and the reference catalogues validate that a metric or event type is compatible with that asset's system. The canonical schema and synthetic seed are in [`db/init/anzma_schema_and_seed.sql`](../db/init/anzma_schema_and_seed.sql); Compose applies migrations 003–007 from [`db/migrations/`](../db/migrations/).
+The database stores telemetry and event observations separately. Both belong to an asset, and the reference catalogues validate that a metric or event type is compatible with that asset's system. The canonical schema and synthetic seed are in [`db/init/anzma_schema_and_seed.sql`](../db/init/anzma_schema_and_seed.sql); Compose applies migrations 003–008 from [`db/migrations/`](../db/migrations/).
 
 ## Systems and their assets
 
@@ -139,7 +139,7 @@ To rebuild only the API after changing application or dashboard files:
 docker compose --env-file .env -p anzma-insight -f deploy/compose/docker-compose.yml up -d --build api
 ```
 
-The PostgreSQL initialization scripts run only when the database volume is empty. Existing volumes are not reseeded automatically; migrations 006–007 for an existing database uses the runner documented in [`DATA_MIGRATION_PLAN.md`](DATA_MIGRATION_PLAN.md). Avoid `down -v` for routine restarts: it deletes the local PostgreSQL data and downloaded Ollama models. Compose services and initialization mounts are defined in [`deploy/compose/docker-compose.yml`](../deploy/compose/docker-compose.yml).
+The PostgreSQL initialization scripts run only when the database volume is empty. Existing volumes are not reseeded automatically; migrations 006–008 for an existing database use the runner documented in [`DATA_MIGRATION_PLAN.md`](DATA_MIGRATION_PLAN.md). Avoid `down -v` for routine restarts: it deletes the local PostgreSQL data and downloaded Ollama models. Compose services and initialization mounts are defined in [`deploy/compose/docker-compose.yml`](../deploy/compose/docker-compose.yml).
 
 If Ollama or its model is unavailable, database-backed dashboard features continue to work and explanations can use the deterministic fallback. The AI runtime is optional for normal dashboard operation.
 

@@ -2,19 +2,19 @@
 
 | | |
 |---|---|
-| **Status** | Canonical model and implementation reference. Migrations 006–007 implement the approved ingestion foundation and event identity constraints; optional structures below remain proposals. |
-| **Baseline** | Historical deployed baseline: 13 tables and 5 views through migration 005. Repository target includes migrations 006–007; see `DATABASE_BASELINE.md` and `DATA_MIGRATION_PLAN.md`. |
+| **Status** | Canonical model and implementation reference. Migrations 006–008 implement the approved ingestion foundation and event identity constraints; optional structures below remain proposals. |
+| **Baseline** | Historical deployed baseline: 13 tables and 5 views through migration 005. Repository target includes migrations 006–008; see `DATABASE_BASELINE.md` and `DATA_MIGRATION_PLAN.md`. |
 | **Related** | `CORE_DATA_ARCHITECTURE.md`, `HISTORIAN_DESIGN.md`, `DATA_MIGRATION_PLAN.md`, `SPRINT_1_TECHNICAL_ISSUES.md` |
 
-Notation: **[Existing]** present before migration 006 · **[Implemented]** added by 006/007/code · **[NEW]** future proposal · **[Open]** requires a separate decision.
+Notation: **[Existing]** present before migration 006 · **[Implemented]** added by migrations 006–008/code · **[NEW]** future proposal · **[Open]** requires a separate decision.
 No DDL here is a migration; the column lists are specifications for review.
 
 ## Implementation status (18 November 2026)
 
 - **Implemented and runtime-verified:** multiple buildings, locations, system types and assets are represented by `buildings`, `locations`, `system_types`, and `assets`; assets reference a system and location, and locations reference a building. PostgreSQL also contains historical `telemetry_records`, `event_records`, alerts, and incidents. Telemetry/event rows do not carry explicit building IDs; building is derived through the asset/location relationship.
 - **Implemented and test-verified:** alert rules and anomaly detection, incident grouping/lifecycle, evidence re-reading and grounding checks, recommendations, chat/dashboard routes, and the Day 3 bandwidth percentage correction. The current checkout's offline unit suite passed 25/25; see `PRODUCTIZATION_IMPLEMENTATION_REPORT.md` for the bounded verification record.
-- **Implemented (migrations 006–007 + code):** `/api/v1/ingest/batches`, source registry and hashed credentials, source-scoped asset IDs, nullable provenance/quality columns, batch/rejection audit, append-only equipment-state facts, quality-aware telemetry view, and distinct source event IDs at a shared asset/type/time. Existing facts were not backfilled; operational readers exclude quality `BAD` while retaining legacy `NULL` quality.
-- **Not implemented:** freshness/gap tracking, retention policy, rollups, organization hierarchy, and migration 006 application to the shared runtime database.
+- **Implemented (migrations 006–008 + code):** `/api/v1/ingest/batches`, source registry and hashed credentials, source-scoped asset IDs, nullable provenance/quality columns, batch/rejection audit, append-only equipment-state facts, quality-aware telemetry view, distinct source event IDs at a shared asset/type/time, and migration 008 back-date/diagnostics/audit/plausibility fields. Existing facts were not backfilled; operational readers exclude quality `BAD` while retaining legacy `NULL` quality.
+- **Not implemented:** freshness/gap tracking, retention policy, rollups, organization hierarchy, and migrations 006–008 application to the shared runtime database.
 - **Known limitation:** the existing seed is synthetic. The current multi-building schema is a structural capability, not proof that every API, chat query, or dashboard path enforces building-level isolation.
 - **Approved and implemented for contract v1 (18 November 2026):** `/api/v1/ingest/batches`; per-record outcomes committed in one batch transaction; external IDs unique per source and mapped only to assets in that source's building; per-source bearer API keys stored as hashes with revocation/rotation; first-write-wins for telemetry conflicts, with rejected payloads retained separately.
 
@@ -197,7 +197,7 @@ Canonical unit = `metric_types.unit` **[Existing]**. Current seed values [Verifi
 | `smoke_level` | `%/m` | |
 | `camera_fps` | `fps` | |
 
-Proposed additions to `metric_types`: `value_kind` (`NUMERIC|BOOLEAN|COUNTER`), `min_plausible`, `max_plausible`. `unit_conversions(from_unit, to_unit, factor, offset)` initially holds only conversions needed by an actual connector (e.g. `F→C`: `(v−32)/1.8`); connectors remain the primary converters.
+Migration 008 implements nullable `metric_types.min_plausible` and `max_plausible`; values outside configured bounds are retained with `quality=BAD` and excluded from operational readers. `value_kind` (`NUMERIC|BOOLEAN|COUNTER`) and `unit_conversions(from_unit, to_unit, factor, offset)` remain proposals; connectors remain the primary unit converters.
 
 ---
 
@@ -343,7 +343,7 @@ Existing rows retain `quality=NULL` because their historical quality is unknown.
 | `alerts` | `UNIQUE (rule_id, asset_id, first_ts)`; FK `(asset_id, building_id)`; index `(building_id, status, first_ts DESC)` | F-14 |
 | `incidents` | index `(building_id, status, last_ts)` | |
 | `alert_evidence` | `UNIQUE (alert_id, ref)`; exactly-one-source CHECK; FKs RESTRICT; index `(telemetry_id)`, `(event_id)` | referential evidence |
-| `ingestion_batches` | `UNIQUE (source_id, client_batch_id)` | idempotent retries |
+| `ingestion_batches` | `UNIQUE (source_id, batch_id)` | idempotent retries |
 
 Append-only triggers (reject `UPDATE/DELETE`) on facts are **[Open]** — they conflict with any future retention job; deletion would run under a dedicated role/function.
 
@@ -351,7 +351,7 @@ Append-only triggers (reject `UPDATE/DELETE`) on facts are **[Open]** — they c
 
 ## 16. JSON contract examples (contract version `1.0`) [Proposed]
 
-These show the proposed standard. **The current implementation does not accept them.**
+These examples are a historical draft and are superseded for v1 by [`INGESTION_CONTRACT.md`](INGESTION_CONTRACT.md), which matches the implemented route.
 
 ### 16.1 Batch envelope (common)
 
@@ -448,19 +448,19 @@ Vendor B raw (illustrative): `{"deviceId":"B-77/ai3","value":24.6,"unit":"Celsiu
 | Field | Telemetry | State | Event | Notes |
 |---|---|---|---|---|
 | `contract_version` (envelope) | **required** | required | required | `MAJOR.MINOR` |
-| `source.source_code` | required | required | required | must exist in `data_sources` and match the authenticated sender (auth is **[Open]**; none exists today) |
+| `source.source_code` | required | required | required | must exist in `data_sources` and match the source authenticated by its per-source API key |
 | `building_code` | required | required | required | |
 | `batch_id` | required (UUID) | required | required | retry idempotency |
 | `record_type` | required | required | required | `telemetry\|state\|event` |
 | `asset.asset_code` **or** `asset.external_id` | exactly one | exactly one | exactly one | conditional |
 | `metric_code` | required | — | — | |
-| `value` | required unless `quality=MISSING` | — | optional | finite number |
+| `value` | required | — | — | finite number; a missing measurement is omitted, not sent as a quality value |
 | `unit` | required with `value` | — | optional | must be canonical/registered |
 | `observed_at` | required | required | required | UTC `Z` |
-| `quality` | optional (default `GOOD`) | — | — | `GOOD\|UNCERTAIN\|BAD\|MISSING` |
+| `quality` | optional (default `GOOD`) | — | — | `GOOD\|UNCERTAIN\|BAD`; `MISSING` is invalid |
 | `event_type` | — | — | required | in `event_types`, valid for the asset’s system |
 | `severity` | — | — | optional (default `INFO`) | `INFO\|WARNING\|CRITICAL` (uppercase in contract; stored lowercase as today) |
-| `source_event_id` | — | — | **required for connectors** (recommended) | dedupe key |
+| `source_event_id` | — | — | required | event identity key |
 | `operational_state`, `availability`, `communication_status` | — | at least one required | — | enums §8 |
 | `reason_code`, `message`, `details`, `source_metadata` | optional | optional | optional | opaque JSON objects; size-limited **[Open]** |
 
@@ -472,7 +472,7 @@ Vendor B raw (illustrative): `{"deviceId":"B-77/ai3","value":24.6,"unit":"Celsiu
 
 - **Contract version** `MAJOR.MINOR` in every envelope and stored per row (`contract_version`). This implementation accepts `1.0`; future compatibility/deprecation windows require a versioned contract change.
 - **Unknown fields:** ignored with a warning in the response; only `source_metadata`/`details` content is persisted opaque. Unknown enum values → reject.
-- **Schema evolution:** migrations `003_incidents.sql` through `007_event_source_identity.sql` exist. Migration 006 adds `schema_migrations`; `scripts/apply_migrations.py` applies 006+ to existing databases under an advisory lock. Compose init mounts still apply only to empty database volumes.
-- **Backward compatibility rules:** migrations 006–007 preserve historical fact rows; existing endpoints and response shapes (`/dashboard/*`, `/alerts`, `/incidents`, `/chat`, `/ask`, `POST /events`, `POST /alerts`) remain supported. Legacy facts retain NULL source/quality/received metadata, and legacy event duplicate handling stays intact.
+- **Schema evolution:** migrations `003_incidents.sql` through `008_ingestion_contract_conformance.sql` exist. Migration 006 adds `schema_migrations`; `scripts/apply_migrations.py` applies 006+ to existing databases under an advisory lock. Compose init mounts still apply only to empty database volumes.
+- **Backward compatibility rules:** migrations 006–008 preserve historical fact rows; existing endpoints and response shapes (`/dashboard/*`, `/alerts`, `/incidents`, `/chat`, `/ask`, `POST /events`, `POST /alerts`) remain supported. Legacy facts retain NULL source/quality/received metadata, and legacy event duplicate handling stays intact.
 - **API compatibility:** the versioned route is `POST /api/v1/ingest/batches`; batch result retrieval is `GET /api/v1/ingest/batches/{batch_id}`.
 - **Terminology for UI vs DB** stays a translation layer (AD-04).

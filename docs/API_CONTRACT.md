@@ -1,7 +1,8 @@
 # API_CONTRACT.md - Anzma Unified Platform
 
 **Owner:** Amr (reviewed by: Ahmed - `[TBD: confirm]`)
-**Base path:** `/api/v1` **[Proposed]**. Ahmed's current paths (`/ingest`, `/alerts`, `/chat`, `/dashboard/*`) have no prefix **[Verified]** and are moved under `/api/v1`; unprefixed aliases may stay during Day 2 only.
+**Status:** Historical Day 2 platform API proposal; not the authoritative ingestion contract. The approved versioned ingestion API is implemented at `/api/v1/ingest/batches` and documented in [`INGESTION_CONTRACT.md`](INGESTION_CONTRACT.md). Other proposed routes below remain proposals unless independently verified.
+**Base path in this draft:** `/api/v1` **[Proposed for this historical platform API]**. Existing dashboard, alert, chat, and incident paths remain supported.
 
 Tags: **[Verified]** exists in code today, **[Proposed]** agreed by this document, **[TBD]** open.
 

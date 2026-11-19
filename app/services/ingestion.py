@@ -59,7 +59,9 @@ def parse_key_prefix(token: str) -> str | None:
 
 
 def authenticate(cur, authorization: str | None) -> dict[str, Any]:
-    if not authorization or not authorization.startswith("Bearer "):
+    if authorization is None or not authorization.strip():
+        raise IngestionError(401, "AUTH_MISSING", "A source API key is required.")
+    if not authorization.startswith("Bearer "):
         raise IngestionError(401, "AUTH_INVALID", "A valid source API key is required.")
     token = authorization[7:].strip()
     prefix = parse_key_prefix(token)
@@ -67,7 +69,7 @@ def authenticate(cur, authorization: str | None) -> dict[str, Any]:
         raise IngestionError(401, "AUTH_INVALID", "A valid source API key is required.")
     cur.execute(
         """SELECT c.credential_id, c.source_id, c.key_hash, c.scopes, c.revoked_at, c.expires_at,
-                  s.source_code, s.building_id, s.status
+                  s.source_code, s.building_id, s.status, s.max_backdate_days
            FROM source_credentials c JOIN data_sources s USING (source_id)
            WHERE c.key_prefix = %s""", (prefix,)
     )
@@ -77,7 +79,7 @@ def authenticate(cur, authorization: str | None) -> dict[str, Any]:
         raise IngestionError(401, "AUTH_INVALID", "A valid source API key is required.")
     now = datetime.now(timezone.utc)
     if row["revoked_at"] is not None or (row["expires_at"] is not None and row["expires_at"] <= now) \
-            or row["status"] != "ACTIVE":
+            or row["status"] in {"DISABLED", "ERROR"}:
         raise IngestionError(403, "SOURCE_DISABLED", "This source credential is disabled.")
     cur.execute("UPDATE source_credentials SET last_used_at = %s WHERE credential_id = %s", (now, row["credential_id"]))
     return dict(row)
@@ -93,6 +95,15 @@ def parse_timestamp(value: Any, label: str, received_at: datetime) -> datetime:
     if parsed > received_at + FUTURE_TOLERANCE:
         raise RecordRejected("FUTURE_TIMESTAMP", f"{label} is more than five minutes in the future.")
     return parsed.astimezone(timezone.utc)
+
+
+def _observed_at(record: dict[str, Any], source: dict[str, Any], received_at: datetime) -> datetime:
+    observed_at = parse_timestamp(record.get("observed_at"), "observed_at", received_at)
+    max_backdate_days = source.get("max_backdate_days")
+    max_backdate_days = 90 if max_backdate_days is None else max_backdate_days
+    if observed_at < received_at - timedelta(days=max_backdate_days):
+        raise RecordRejected("TIMESTAMP_TOO_OLD", f"observed_at exceeds the {max_backdate_days}-day back-date limit.")
+    return observed_at
 
 
 def _opaque(value: Any, label: str, *, required_type=dict) -> Any:
@@ -118,6 +129,14 @@ def _resolve_asset(cur, source: dict[str, Any], building_code: str, asset: Any) 
                WHERE a.asset_code=%s AND b.building_code=%s AND b.building_id=%s""",
             (code, building_code, source["building_id"]),
         )
+        row = cur.fetchone()
+        if not row:
+            cur.execute("""SELECT l.building_id FROM assets a JOIN locations l USING(location_id)
+                           WHERE a.asset_code=%s""", (code,))
+            other_building = cur.fetchone()
+            if other_building:
+                raise RecordRejected("ASSET_NOT_PERMITTED", "Asset is outside this source's building scope.")
+            raise RecordRejected("ASSET_UNRESOLVED", "Asset is not registered or mapped within this source's building.")
     else:
         external_id = asset["external_id"]
         if not isinstance(external_id, str) or not 1 <= len(external_id) <= 128:
@@ -128,9 +147,15 @@ def _resolve_asset(cur, source: dict[str, Any], building_code: str, asset: Any) 
                WHERE x.source_id=%s AND x.external_id=%s AND l.building_id=%s""",
             (source["source_id"], external_id, source["building_id"]),
         )
-    row = cur.fetchone()
-    if not row:
-        raise RecordRejected("ASSET_UNRESOLVED", "Asset is not registered or mapped within this source's building.")
+        row = cur.fetchone()
+        if not row:
+            cur.execute("""SELECT bool_and(l.building_id<>%s) AS outside_scope FROM asset_external_ids x
+                           JOIN assets a USING(asset_id) JOIN locations l USING(location_id)
+                           WHERE x.external_id=%s""", (source["building_id"], external_id))
+            mapped = cur.fetchone()
+            if mapped and mapped["outside_scope"]:
+                raise RecordRejected("ASSET_NOT_PERMITTED", "Mapped asset is outside this source's building scope.")
+            raise RecordRejected("ASSET_UNRESOLVED", "Asset is not registered or mapped within this source's building.")
     return dict(row)
 
 
@@ -144,9 +169,8 @@ def _validate_record(cur, source: dict[str, Any], building_code: str, record: An
     warnings = [{"code": "UNKNOWN_FIELD", "message": f"unknown field '{key}' ignored"}
                 for key in sorted(set(record) - _allowed_fields(kind))]
     if SCOPES[kind] not in (source.get("scopes") or []):
-        raise RecordRejected("SCOPE_FORBIDDEN", f"This API key cannot ingest {kind} records.")
+        raise RecordRejected("SCOPE_DENIED", f"This API key cannot ingest {kind} records.")
     asset = _resolve_asset(cur, source, building_code, record.get("asset"))
-    observed_at = parse_timestamp(record.get("observed_at"), "observed_at", received_at)
     metadata = _opaque(record.get("source_metadata"), "source_metadata")
 
     if kind == "telemetry":
@@ -156,21 +180,32 @@ def _validate_record(cur, source: dict[str, Any], building_code: str, record: An
         metric_code, value, unit = record["metric_code"], record["value"], record["unit"]
         if not isinstance(metric_code, str) or not isinstance(unit, str):
             raise RecordRejected("SCHEMA_INVALID", "metric_code and unit must be strings.")
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
-            raise RecordRejected("INVALID_VALUE", "value must be a finite JSON number.")
         quality = record.get("quality", "GOOD")
         if not isinstance(quality, str) or quality not in QUALITY:
             raise RecordRejected("SCHEMA_INVALID", "quality must be GOOD, UNCERTAIN, or BAD.")
         cur.execute(
-            """SELECT m.metric_id, m.unit FROM metric_types m
-               JOIN metric_type_system_compat c USING (metric_id)
-               WHERE m.name=%s AND c.system_type_id=%s""", (metric_code, asset["system_type_id"])
+            """SELECT m.metric_id, m.unit, m.min_plausible, m.max_plausible,
+                      (c.metric_id IS NOT NULL) AS compatible
+               FROM metric_types m LEFT JOIN metric_type_system_compat c
+                 ON c.metric_id=m.metric_id AND c.system_type_id=%s
+               WHERE m.name=%s""", (asset["system_type_id"], metric_code)
         )
         metric = cur.fetchone()
         if not metric:
-            raise RecordRejected("UNKNOWN_METRIC", "Metric is unknown or incompatible with the asset system.")
+            raise RecordRejected("UNKNOWN_METRIC", "Metric is not registered.")
+        if not metric["compatible"]:
+            raise RecordRejected("METRIC_NOT_COMPATIBLE", "Metric is not compatible with the asset system.")
         if metric["unit"] != unit:
             raise RecordRejected("UNIT_MISMATCH", f"unit '{unit}' does not match canonical unit '{metric['unit']}'.")
+        observed_at = _observed_at(record, source, received_at)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+            raise RecordRejected("INVALID_VALUE", "value must be a finite JSON number.")
+        if metric["min_plausible"] is not None and float(value) < float(metric["min_plausible"]):
+            quality = "BAD"
+            warnings.append({"code": "OUT_OF_PLAUSIBLE_RANGE", "message": "value is below metric min_plausible; stored as BAD"})
+        if metric["max_plausible"] is not None and float(value) > float(metric["max_plausible"]):
+            quality = "BAD"
+            warnings.append({"code": "OUT_OF_PLAUSIBLE_RANGE", "message": "value is above metric max_plausible; stored as BAD"})
         return kind, {"asset_id": asset["asset_id"], "metric_id": metric["metric_id"], "value": float(value),
                       "quality": quality, "observed_at": observed_at, "source_metadata": metadata}, warnings
 
@@ -186,13 +221,17 @@ def _validate_record(cur, source: dict[str, Any], building_code: str, record: An
             raise RecordRejected("SCHEMA_INVALID", "severity must be INFO, WARNING, or CRITICAL.")
         details = _opaque(record.get("details"), "details") or {}
         cur.execute(
-            """SELECT t.event_type_id FROM event_types t
-               JOIN event_type_system_compat c USING (event_type_id)
-               WHERE t.name=%s AND c.system_type_id=%s""", (event_type.lower(), asset["system_type_id"])
+            """SELECT t.event_type_id, (c.event_type_id IS NOT NULL) AS compatible
+               FROM event_types t LEFT JOIN event_type_system_compat c
+                 ON c.event_type_id=t.event_type_id AND c.system_type_id=%s
+               WHERE t.name=%s""", (asset["system_type_id"], event_type.lower())
         )
         event = cur.fetchone()
         if not event:
-            raise RecordRejected("UNKNOWN_EVENT_TYPE", "Event type is unknown or incompatible with the asset system.")
+            raise RecordRejected("UNKNOWN_EVENT_TYPE", "Event type is not registered.")
+        if not event["compatible"]:
+            raise RecordRejected("EVENT_NOT_COMPATIBLE", "Event type is not compatible with the asset system.")
+        observed_at = _observed_at(record, source, received_at)
         return kind, {"asset_id": asset["asset_id"], "event_type_id": event["event_type_id"],
                       "source_event_id": event_id, "severity": severity.lower(), "details": details,
                       "observed_at": observed_at, "source_metadata": metadata}, warnings
@@ -213,6 +252,7 @@ def _validate_record(cur, source: dict[str, Any], building_code: str, record: An
         raise RecordRejected("SCHEMA_INVALID", "reason_code must use UPPER_SNAKE format.")
     if message is not None and (not isinstance(message, str) or len(message) > 500):
         raise RecordRejected("SCHEMA_INVALID", "message must be a string of at most 500 characters.")
+    observed_at = _observed_at(record, source, received_at)
     return kind, {"asset_id": asset["asset_id"], "reported_state": state_value, "availability": availability,
                   "reason_code": reason_code, "message": message, "observed_at": observed_at,
                   "source_metadata": metadata}, warnings
@@ -325,6 +365,11 @@ def process_batch(cur, source: dict[str, Any], body: dict[str, Any], received_at
         raise IngestionError(422, "UNKNOWN_BUILDING", "building_code is not registered to this source.", batch_id=batch_text)
     if body.get("delivery_mode", "LIVE") not in {"LIVE", "BACKFILL"}:
         raise IngestionError(422, "SCHEMA_INVALID", "delivery_mode must be LIVE or BACKFILL.", batch_id=batch_text)
+    connector_status = body.get("source", {}).get("connector_status")
+    if connector_status is not None and not isinstance(connector_status, dict):
+        raise IngestionError(422, "SCHEMA_INVALID", "source.connector_status must be an object.", batch_id=batch_text)
+    if connector_status is not None and len(json.dumps(connector_status, separators=(",", ":")).encode("utf-8")) > MAX_OPAQUE_BYTES:
+        raise IngestionError(422, "SCHEMA_INVALID", "source.connector_status exceeds 8 KiB.", batch_id=batch_text)
     records = body.get("records")
     if not isinstance(records, list) or len(records) > MAX_RECORDS:
         raise IngestionError(413, "BATCH_TOO_LARGE", "records must contain no more than 5000 items.", batch_id=batch_text)
@@ -340,16 +385,19 @@ def process_batch(cur, source: dict[str, Any], body: dict[str, Any], received_at
             raise IngestionError(409, "BATCH_ID_REUSED", "batch_id was previously used with a different payload.", batch_id=batch_text)
         return dict(previous["response_payload"]), True
 
-    cur.execute("SELECT source_id FROM data_sources WHERE source_id=%s AND status='ACTIVE' FOR UPDATE", (source["source_id"],))
+    cur.execute("""SELECT source_id FROM data_sources WHERE source_id=%s
+                   AND status NOT IN ('DISABLED','ERROR') FOR UPDATE""", (source["source_id"],))
     if not cur.fetchone():
         raise IngestionError(403, "SOURCE_DISABLED", "This source is disabled.", batch_id=batch_text)
+    delivery_mode = body.get("delivery_mode", "LIVE")
     cur.execute(
         """INSERT INTO ingestion_batches
            (source_id,batch_id,contract_version,payload_sha256,received_at,sent_at,connector_name,connector_version,
-            received_count,accepted_count,duplicate_count,rejected_count,response_payload)
-           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,0,0,0,0,'{}'::jsonb) RETURNING ingestion_batch_id""",
+            delivery_mode,connector_status,received_count,accepted_count,duplicate_count,rejected_count,response_payload)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,0,0,0,0,'{}'::jsonb) RETURNING ingestion_batch_id""",
         (source["source_id"], batch_uuid, CONTRACT_VERSION, payload_hash, received_at, sent_at,
-         body["source"]["connector"]["name"], body["source"]["connector"]["version"]),
+         body["source"]["connector"]["name"], body["source"]["connector"]["version"], delivery_mode,
+         da.Json(cur, connector_status) if connector_status is not None else None),
     )
     batch_pk = cur.fetchone()["ingestion_batch_id"]
 
@@ -374,8 +422,11 @@ def process_batch(cur, source: dict[str, Any], body: dict[str, Any], received_at
             result = {"index": index, "record_type": kind, "outcome": "REJECTED",
                       "reason_code": exc.code, "message": exc.message}
             results.append(result)
+            payload = record if isinstance(record, dict) else {"value": record}
+            external_id = (payload.get("asset", {}).get("external_id")
+                           if isinstance(payload.get("asset"), dict) else None)
             rejected.append({"record_index": index, "record_type": kind, "reason_code": exc.code,
-                             "message": exc.message, "payload": record if isinstance(record, dict) else {"value": record}})
+                             "message": exc.message, "payload": payload, "external_id": external_id})
 
     status = "PARTIAL" if rejected_count else "ACCEPTED"
     response = {
@@ -385,7 +436,8 @@ def process_batch(cur, source: dict[str, Any], body: dict[str, Any], received_at
         "counts": {"received": len(records), "accepted": accepted_count,
                    "duplicate": duplicate_count, "rejected": rejected_count},
         "results": results,
-        "rejected": [{k: v for k, v in row.items() if k != "payload"} for row in rejected[:100]],
+        "rejected": [{"index": row["record_index"], "record_type": row["record_type"],
+                      "reason_code": row["reason_code"], "message": row["message"]} for row in rejected[:100]],
         "rejected_truncated": rejected_count > 100,
         "warnings": warnings,
         "transaction": "COMMITTED",
@@ -393,10 +445,10 @@ def process_batch(cur, source: dict[str, Any], body: dict[str, Any], received_at
     for item in rejected:
         cur.execute(
             """INSERT INTO ingestion_rejections
-               (ingestion_batch_id,record_index,record_type,reason_code,message,payload)
-               VALUES (%s,%s,%s,%s,%s,%s)""",
-            (batch_pk, item["record_index"], item["record_type"], item["reason_code"], item["message"],
-             da.Json(cur, item["payload"])),
+               (ingestion_batch_id,source_id,external_id,record_index,record_type,reason_code,message,payload)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (batch_pk, source["source_id"], item["external_id"], item["record_index"], item["record_type"],
+             item["reason_code"], item["message"], da.Json(cur, item["payload"])),
         )
     cur.execute(
         """UPDATE ingestion_batches SET received_count=%s, accepted_count=%s, duplicate_count=%s, rejected_count=%s,
