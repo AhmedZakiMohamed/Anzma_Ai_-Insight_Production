@@ -14,6 +14,8 @@ import psycopg2.extras
 import socketio
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Query, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -386,6 +388,25 @@ def _ingestion_schema_ready(cur):
 
 def _ingestion_error_response(exc: ingestion.IngestionError):
     return JSONResponse(status_code=exc.status, content=exc.response(exc.batch_id))
+
+
+@api.exception_handler(RequestValidationError)
+async def ingestion_request_validation_error(request: Request, exc: RequestValidationError):
+    if not request.url.path.startswith("/api/v1/ingest/"):
+        return await request_validation_exception_handler(request, exc)
+
+    authorization = request.headers.get("authorization")
+    token = token_from_authorization(authorization)
+    if ingestion.parse_key_prefix(token) is None:
+        return _ingestion_error_response(ingestion.IngestionError(
+            401, "AUTH_INVALID", "A valid source API key is required."))
+
+    errors = exc.errors()
+    location = next((error.get("loc", ()) for error in errors if error.get("loc")), ())
+    field_path = ".".join(str(part) for part in location
+                           if part not in {"body", "query", "path", "header", "cookie"}) or "request"
+    return _ingestion_error_response(ingestion.IngestionError(
+        422, "SCHEMA_INVALID", f"Request validation failed at field '{field_path}'."))
 
 
 @api.post("/api/v1/ingest/batches", tags=["Ingestion"], dependencies=[])

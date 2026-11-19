@@ -634,6 +634,8 @@ Each record is validated in this order; the first failure rejects it.
 | 422 | `UNSUPPORTED_CONTRACT_VERSION`, `UNKNOWN_BUILDING`, all records rejected | No — envelope errors need correction; rejected records are audited |
 | 503 | `INGESTION_SCHEMA_NOT_APPLIED`, `SERVICE_UNAVAILABLE` | Retry same batch after migration or transient database recovery |
 
+**Request-model validation on `/api/v1/ingest/*`:** missing or malformed Authorization key shape returns `401 AUTH_INVALID`; a key-shaped header returns `422 SCHEMA_INVALID` with the first field path and no submitted values. Other routes retain FastAPI's default validation response.
+
 ---
 
 ## 11. Authentication and authorization

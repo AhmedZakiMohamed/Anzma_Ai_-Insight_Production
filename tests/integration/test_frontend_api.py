@@ -864,6 +864,33 @@ def _():
     assert after_empty["last_success_at"] == after_empty["last_received_at"]
 
 
+@test("ingestion request validation: key shape gates errors, field path only, other routes keep default envelope")
+def _():
+    marker = "request-input-must-not-be-echoed"
+    payload = {"contract_version": "1.0", "batch_id": marker,
+               "sent_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+               "source": {"source_code": "validation-test-source",
+                          "connector": {"name": "validation-test", "version": "1"}},
+               "building_code": "VALIDATION-TEST", "records": []}
+
+    missing = TestClient(App.api).post("/api/v1/ingest/batches", json=payload)
+    invalid = TestClient(App.api).post("/api/v1/ingest/batches", json=payload,
+                                      headers={"Authorization": "Bearer not-a-source-key"})
+    key_shaped = "azk_0123456789ab_" + "s" * 40
+    malformed = TestClient(App.api).post("/api/v1/ingest/batches", json=payload,
+                                        headers={"Authorization": f"Bearer {key_shaped}"})
+
+    assert missing.status_code == 401 and missing.json()["error"]["code"] == "AUTH_INVALID"
+    assert invalid.status_code == 401 and invalid.json()["error"]["code"] == "AUTH_INVALID"
+    assert set(missing.json()) == {"error"} and set(missing.json()["error"]) == {"code", "message", "retryable"}
+    assert malformed.status_code == 422 and malformed.json()["error"]["code"] == "SCHEMA_INVALID"
+    assert "batch_id" in malformed.json()["error"]["message"]
+    assert marker not in malformed.text and "input" not in malformed.json()
+
+    other_route = client.get("/dashboard/overview", params={"hours": "not-an-integer"})
+    assert other_route.status_code == 422 and "detail" in other_route.json() and "error" not in other_route.json()
+
+
 if __name__ == "__main__":
     ok = 0
     for name, fn in RESULTS:
