@@ -455,8 +455,23 @@ def process_batch(cur, source: dict[str, Any], body: dict[str, Any], received_at
                response_payload=%s WHERE ingestion_batch_id=%s""",
         (len(records), accepted_count, duplicate_count, rejected_count, da.Json(cur, response), batch_pk),
     )
-    cur.execute("UPDATE data_sources SET last_received_at=%s, last_success_at=%s WHERE source_id=%s",
-                (received_at, received_at, source["source_id"]))
+    last_success_at = received_at if accepted_count + duplicate_count > 0 or not records else None
+    if rejected_count:
+        first_rejection = rejected[0]
+        last_error = f"{first_rejection['reason_code']}: {first_rejection['message']}"[:500]
+        cur.execute(
+            """UPDATE data_sources
+               SET last_received_at=%s, last_success_at=COALESCE(%s,last_success_at),
+                   last_error_at=%s, last_error=%s
+               WHERE source_id=%s""",
+            (received_at, last_success_at, received_at, last_error, source["source_id"]),
+        )
+    else:
+        cur.execute(
+            """UPDATE data_sources SET last_received_at=%s, last_success_at=COALESCE(%s,last_success_at)
+               WHERE source_id=%s""",
+            (received_at, last_success_at, source["source_id"]),
+        )
     if records and accepted_count == 0 and duplicate_count == 0:
         response["status"] = "REJECTED"
         cur.execute("UPDATE ingestion_batches SET response_payload=%s WHERE ingestion_batch_id=%s",

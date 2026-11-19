@@ -807,6 +807,63 @@ def _():
     assert full.status_code == 200 and len(full.json()["rejected"]) == 101 and full.json()["rejected_truncated"] is False
 
 
+@test("source health: received always advances; only success/duplicate/empty advances success; first error is capped")
+def _():
+    asset, metric, building_code, source_code, token = _ingestion_setup()
+    auth = {"Authorization": f"Bearer {token}"}
+    observed_at = (datetime.now(timezone.utc) - timedelta(hours=2)).replace(microsecond=0)
+
+    def stamp(value):
+        return value.isoformat().replace("+00:00", "Z")
+
+    def telemetry(*, metric_code=None, unit=None):
+        return {"record_type": "telemetry", "asset": {"asset_code": asset["asset_code"]},
+                "observed_at": stamp(observed_at), "metric_code": metric_code or metric["name"],
+                "value": 12.0, "unit": metric["unit"] if unit is None else unit}
+
+    def post(records):
+        payload = {"contract_version": "1.0", "batch_id": str(uuid.uuid4()),
+                   "sent_at": stamp(datetime.now(timezone.utc)),
+                   "source": {"source_code": source_code,
+                              "connector": {"name": "source-health-test", "version": "1"}},
+                   "building_code": building_code, "records": records}
+        return client.post("/api/v1/ingest/batches", json=payload, headers=auth)
+
+    def health():
+        return one("""SELECT last_received_at,last_success_at,last_error_at,last_error
+                     FROM data_sources WHERE source_code=%s""", source_code)
+
+    accepted = post([telemetry()])
+    assert accepted.status_code == 200 and accepted.json()["counts"]["accepted"] == 1
+    after_accepted = health()
+    assert after_accepted["last_received_at"] is not None
+    assert after_accepted["last_success_at"] == after_accepted["last_received_at"]
+    assert after_accepted["last_error_at"] is None and after_accepted["last_error"] is None
+
+    duplicate = post([telemetry()])
+    assert duplicate.status_code == 200 and duplicate.json()["counts"]["duplicate"] == 1
+    after_duplicate = health()
+    assert after_duplicate["last_received_at"] > after_accepted["last_received_at"]
+    assert after_duplicate["last_success_at"] == after_duplicate["last_received_at"]
+
+    rejected = post([telemetry(unit="x" * 650), telemetry(metric_code="unknown_metric")])
+    assert rejected.status_code == 422 and rejected.json()["counts"]["rejected"] == 2
+    first = rejected.json()["results"][0]
+    after_rejected = health()
+    assert after_rejected["last_received_at"] > after_duplicate["last_received_at"]
+    assert after_rejected["last_success_at"] == after_duplicate["last_success_at"]
+    assert after_rejected["last_error_at"] == after_rejected["last_received_at"]
+    assert after_rejected["last_error"] == f"{first['reason_code']}: {first['message']}"[:500]
+    assert len(after_rejected["last_error"]) == 500
+
+    empty = post([])
+    assert empty.status_code == 200 and empty.json()["counts"] == {
+        "received": 0, "accepted": 0, "duplicate": 0, "rejected": 0}
+    after_empty = health()
+    assert after_empty["last_received_at"] > after_rejected["last_received_at"]
+    assert after_empty["last_success_at"] == after_empty["last_received_at"]
+
+
 if __name__ == "__main__":
     ok = 0
     for name, fn in RESULTS:
