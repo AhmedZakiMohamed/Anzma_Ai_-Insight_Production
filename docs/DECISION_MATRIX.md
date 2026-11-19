@@ -1,5 +1,7 @@
 # Decision Matrix: Merging Amr's and Ahmed's Components into Anzma AI Insight
 
+> **Historical source snapshot:** findings below describe the code reviewed on 8 November 2026, not the current repository. Current authentication and network behavior is recorded in `KNOWN_ISSUES.md`, `INGESTION_CONTRACT.md`, and `RELEASE_CHECKLIST_v0.1.md`.
+
 | | |
 |---|---|
 | **Status** | Draft v2 for team review (replaces the first, incomplete draft) |

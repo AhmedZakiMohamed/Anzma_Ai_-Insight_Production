@@ -199,7 +199,7 @@ Report format: one table per run (check, before, after, status), kept with the p
 - **Zero-downtime considerations:** additive DDL is metadata-only; backfill in small batches; `CREATE INDEX CONCURRENTLY`; run validation off-peak.
 - **Detection loop** runs inside the API process (`app/main.py`); consider an advisory lock if multiple workers or concurrency tests show a race remains.
 - **Secrets:** no credentials in migrations or docs; `.env` is untracked and must not be shipped in archives (`README.md` and `.gitignore` confirm it is git-ignored; the hand-over ZIP contained one).
-- **Network exposure:** the DB port (5432) and API are published and unauthenticated (`README.md` limitations); add authentication before connectors send real data.
+- **Network exposure (current Compose defaults):** PostgreSQL and Ollama host ports bind to loopback. Operational REST and Socket.IO require `ANZMA_API_TOKEN`; ingestion uses separate per-source keys. The API port may be externally reachable and should be behind HTTPS/network controls; shared token has no per-user RBAC. Explicit DB/Ollama external binding requires `DB_BIND_ADDRESS` / `OLLAMA_BIND_ADDRESS` overrides.
 
 ## 12. Risks and dependencies
 
@@ -215,4 +215,4 @@ Report format: one table per run (check, before, after, status), kept with the p
 | 8 | Test suites rebuild databases from the base schema | Apply migrations 003–008 in the test harness; tested in isolated databases. |
 | 9 | Seed is data-relative and non-reproducible across loads | Same-database before/after comparison (§9.1) |
 | 10 | Existing-database migration is an operational deployment step | Use the implemented advisory-locked runner after backup/review; no live migration performed here. |
-| 11 | Legacy API/DB surfaces do not have broad authentication | v1 ingestion is protected by source-scoped keys; expanding auth beyond approved ingestion is separate scope. |
+| 11 | Historical snapshot: legacy API/DB surfaces did not have broad authentication | Current closure work adds bearer/session authentication to normal operational REST and Socket.IO, while v1 ingestion uses source-scoped keys. Per-user identity/RBAC remains open. PostgreSQL/Ollama bind to loopback by default; explicit host overrides may expose them. |

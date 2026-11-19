@@ -3,7 +3,7 @@
 Prioritised technical issues and dependencies derived from the Day 1 review (`CORE_DATA_ARCHITECTURE.md` findings **F-xx**), reconciled with repository/runtime inspection on 18 November 2026.
 No deadlines, estimates or assignees are given: none are supported by evidence in the repository.
 
-> **Current scope note (19 November 2026):** migrations 006–008, the advisory-locked migration runner, per-source hashed credentials, source-scoped mapping, batch API, rejection audit, quality-aware readers, and event collision fix are implemented and tested in an isolated PostgreSQL project. The shared running database remains at its pre-006 schema. Older issue descriptions below are historical unless their status explicitly says current; use `INGESTION_CONTRACT.md` and `DATA_MIGRATION_PLAN.md` for the approved implementation.
+> **Current scope note (19 November 2026):** migrations 006–008, the advisory-locked migration runner, per-source hashed credentials, source-scoped mapping, batch API, rejection audit, quality-aware readers, event collision fix, operational REST/Socket.IO bearer authentication, and loopback-only PostgreSQL/Ollama host bindings are implemented and tested on isolated local projects. The shared running database remains at its pre-006 schema. Older issue descriptions below are historical unless their status explicitly says current; use `INGESTION_CONTRACT.md`, `DATA_MIGRATION_PLAN.md`, `KNOWN_ISSUES.md`, and `RELEASE_CHECKLIST_v0.1.md` for current behavior.
 
 | Priority | Meaning |
 |---|---|
@@ -13,7 +13,7 @@ No deadlines, estimates or assignees are given: none are supported by evidence i
 | **P3** | Future enhancement |
 
 “Phase” refers to migration phases **M0–M6** (`DATA_MIGRATION_PLAN.md` §6) and historian phases **H0–H6** (`HISTORIAN_DESIGN.md` §15).
-Code references below originated in the uploaded archive. Current implementation status must be read with the scope note and linked architecture baseline; historical test results remain historical. The current offline unit baseline passed 25/25.
+Code references below originated in the uploaded archive. Current implementation status must be read with the scope note and linked architecture baseline; historical test results remain historical. The 25/25 count below belongs to the earlier baseline and does not describe the current closure rerun; see `DAY3_FUNCTIONAL_TEST_REPORT.md` for current counts.
 
 ---
 
@@ -21,7 +21,7 @@ Code references below originated in the uploaded archive. Current implementation
 
 ### 0.1 Blockers (must be resolved before connectors or a second building can be onboarded safely)
 
-`ISS-001`, `ISS-002`, `ISS-003` (P0) · `ISS-004`, `ISS-005`, `ISS-006`, `ISS-007`, `ISS-013`, `ISS-015` (P1 foundation)
+`ISS-001`, `ISS-002`, `ISS-003` (P0) · `ISS-004`, `ISS-005`, `ISS-006`, `ISS-013` (P1 foundation). ISS-007 and the endpoint-authentication portion of ISS-015 are implemented; ISS-015 retains shared-token/RBAC limitations.
 
 ### 0.2 Improvements (P1/P2 — required for a stable product, not blocking first ingestion)
 
@@ -127,12 +127,14 @@ flowchart TD
 - **Depends on:** none (needs a restorable backup; ISS-012 provides the procedure).
 - **Acceptance:** snapshot taken on a database copy, re-run on the unchanged copy yields an empty diff; deliberately altering one value on the copy is detected.
 
-### ISS-015 — No authentication on API, database port or Socket.IO
-- **Priority:** P1 (blocker before real connectors) · **Phase:** before M4 goes live
-- **Situation / evidence:** `README.md` limitation “No authentication”; `deploy/compose/docker-compose.yml` publishes database/API/model ports; `app/main.py` Socket.IO currently allows all origins.
-- **Action:** decide approach (Q9); authenticate connector requests and bind `source_code` to the credential; restrict CORS and DB exposure.
-- **Depends on:** Q9; Amr (deployment).
-- **Acceptance:** an unauthenticated ingestion request is rejected; a source cannot write for another source’s `source_code`; no secret appears in repository or docs.
+### ISS-015 — API authentication and host exposure
+- **Current closure status (19 November 2026):** operational REST and Socket.IO bearer/session authentication is implemented and locally verified; PostgreSQL and Ollama bind to loopback by default. Residuals: shared deployment token (no per-user identity/RBAC), opt-in host exposure, and HTTPS configuration for non-local use. Historical findings and recommendations below describe the reviewed archive.
+- **Status:** endpoint authentication and default DB/Ollama loopback binding implemented and locally verified; per-user identity/RBAC remains open.
+- **Priority:** endpoint authentication blocker resolved for the local candidate; per-user authorization is P2 residual · **Phase:** before customer multi-user deployment
+- **Situation / evidence:** operational REST and Socket.IO require the environment bearer token; browser session uses an eight-hour HttpOnly/SameSite=Strict cookie. `/health`, `/ready`, static assets and API docs are intentionally public. Ingestion has distinct per-source keys. PostgreSQL/Ollama bind to loopback by default; overrides are opt-in.
+- **Action completed:** normal API bearer authenticator behind a replaceable interface, missing/invalid 401 responses, secured Socket.IO handshake, browser session/logout endpoints and unique-secret validation. Added configurable DB/Ollama bind addresses with loopback defaults.
+- **Residual:** one shared token has no per-user identity, roles or user-level audit. Production access must use HTTPS and `ANZMA_COOKIE_SECURE=true`.
+- **Verification:** final frontend/API 38/38; manual REST cookie test and real Socket.IO missing/invalid/valid-cookie/valid-token handshakes passed in isolated local Compose. Shared/live DB unchanged.
 
 ### ISS-008 — Hardcoded UTC+2 and 08–18 working hours
 - **Priority:** P1 · **Phase:** M5

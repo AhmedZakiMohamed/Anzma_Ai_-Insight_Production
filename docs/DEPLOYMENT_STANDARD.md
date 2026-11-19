@@ -34,7 +34,7 @@ The reviewed application reads `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPA
 | Database | `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` | Password supplied as a secret; host/port are deployment-specific |
 | AI provider | `CHAT_USE_LLM`, `OLLAMA_HOST`, `OLLAMA_MODEL`, `OLLAMA_TIMEOUT` | Model may be disabled; outage must not disable deterministic fallback |
 | Runtime | `DETECT_INTERVAL`, `ALERT_POLL_INTERVAL`, log level | Validate values and bounds at startup |
-| API security | Authentication/authorization settings when selected | Decide before customer deployment; do not assume unauthenticated access is production-ready |
+| API security | `ANZMA_API_TOKEN` bearer secret for REST/Socket.IO; HttpOnly browser session cookie | Shared deployment identity only; deploy behind HTTPS and set `ANZMA_COOKIE_SECURE=true`; per-user identity/RBAC remains open |
 
 Defaults differ across reviewed modules, and Compose does not pass every runtime setting consistently. The implementation must establish one settings source, consistent defaults, and explicit validation.
 
@@ -87,7 +87,7 @@ The current working tree has one bootstrap schema at `db/init/anzma_schema_and_s
 
 ## 9. Verified local installation sequence
 
-The exact clean-clone run, command output, isolated project, and first batch response are in [`DAY3_DEPLOYMENT_VERIFICATION.md`](DAY3_DEPLOYMENT_VERIFICATION.md). The reproducible sequence is: clone the branch; copy the safe environment example and set the password/free host ports; run Compose; check `ps`, `pg_isready`, `/health`, and `/ready`; provision a source/key and asset mapping with `scripts/ingestion_admin.py`; then send the v1 request in `INGESTION_CONTRACT.md`. Empty volumes apply migrations 003–008 through init scripts. Existing volumes require backup and application of 006–008 with the runner in `DATA_MIGRATION_PLAN.md`.
+The exact clean-clone run, command output, isolated project, and first batch response are in [`DAY3_DEPLOYMENT_VERIFICATION.md`](DAY3_DEPLOYMENT_VERIFICATION.md). The reproducible sequence is: clone the branch; copy the safe environment example; set a strong PostgreSQL password and unique `ANZMA_API_TOKEN`; choose unused host ports; run Compose; check `ps`, `pg_isready`, `/health`, and `/ready`; authenticate the dashboard; provision a source/key and asset mapping with `scripts/ingestion_admin.py`; then send the v1 request in `INGESTION_CONTRACT.md`. PostgreSQL/Ollama bind to loopback by default. Empty volumes apply migrations 003–008 through init scripts. Existing volumes require backup and application of 006–008 with the runner in `DATA_MIGRATION_PLAN.md`.
 
 ## 10. Troubleshooting guide
 

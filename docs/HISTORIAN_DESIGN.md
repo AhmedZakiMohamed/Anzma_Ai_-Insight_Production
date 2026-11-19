@@ -32,7 +32,7 @@ What exists today [Verified]: `POST /api/v1/ingest/batches` writes telemetry, ev
 | Storage, retention, historical query API, aggregates | **Core – Historian** |
 | State derivation, freshness, gap detection | **Core – state/freshness job** |
 | KPI, alerts, incidents, evidence, AI, dashboards | **Core – operational intelligence** (existing; read through the repository/view layer) |
-| Authentication of connectors | **Core** (**[Open]** — no authentication exists today; `README.md` lists it as a limitation) |
+| Authentication of connectors | **Core** (implemented for ingestion with per-source hashed keys; operational REST/Socket.IO use the separate deployment bearer token; user-specific identity/RBAC remains open) |
 
 The Historian is **not** a separate service or database in Day 1: it is a set of PostgreSQL tables, one ingestion module, one query/repository module and one scheduled job, all inside the existing Core deployment.
 

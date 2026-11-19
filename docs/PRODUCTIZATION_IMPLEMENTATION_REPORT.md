@@ -1,7 +1,7 @@
 # Productization implementation report
 
 **Review date:** 19 November 2026
-**Checkout:** `feature/ingestion-foundation`; code implementation at `a9de778cf0793a530ae6e347480f07820c17ab7d`
+**Checkout:** `feature/ingestion-foundation`; current local closure worktree is based on `8cf0bf22a7652254cae95a506a7b067e25a73e8f` and is uncommitted per instruction.
 **Scope:** Core only. No vendor connector or Milestone work.
 
 ## Phase 0 completion summary
@@ -16,7 +16,7 @@
 | 0.6 — all 16 conformance vectors | PASS | [`DAY3_FUNCTIONAL_TEST_REPORT.md`](DAY3_FUNCTIONAL_TEST_REPORT.md), [`INGESTION_CONTRACT.md`](INGESTION_CONTRACT.md) §13.3 |
 | 0.7 — evidence reports and clean-clone deployment verification | PASS with release limitations recorded | [`DAY3_DEPLOYMENT_VERIFICATION.md`](DAY3_DEPLOYMENT_VERIFICATION.md), [`DAY3_DATA_VALIDATION.md`](DAY3_DATA_VALIDATION.md), [`KNOWN_ISSUES.md`](../KNOWN_ISSUES.md), [`RELEASE_CHECKLIST_v0.1.md`](RELEASE_CHECKLIST_v0.1.md) |
 
-Phase 0 item statuses do not authorize a live migration or release tag. Live/shared migration remains untested; release gates and current risks are in the checklist and known-issues file.
+Phase 0 item statuses do not authorize a live migration or release tag. The local H0 rehearsal passed, but a live/shared migration remains untested. Live Ollama inference and visual browser acceptance are explicitly NOT TESTED; connector, freshness/gap, and retention work is deferred to Phase 1. The closure worktree remains uncommitted by instruction; see the release checklist and known-issues file.
 
 ## Executive report
 

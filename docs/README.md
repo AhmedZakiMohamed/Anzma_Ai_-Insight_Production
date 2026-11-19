@@ -2,7 +2,7 @@
 
 Anzma AI Insight is a locally hosted smart-building operations demo. It brings telemetry and events from five building systems into one PostgreSQL database, detects operational problems, groups related alerts into incidents, and presents asset health and incident history in a dashboard.
 
-The repository is a **simulated-data demo**, not a production building-management system. It has no authentication, no direct live-device connection, and no equipment control. Recommendations are informational; the platform does not operate building equipment.
+The repository is a **simulated-data demo**, not a production building-management system. Dashboard/operational REST and Socket.IO routes require a deployment bearer secret; ingestion uses separate per-source keys. There is no direct live-device connection or equipment control. Recommendations are informational; the platform does not operate building equipment.
 
 ## What the platform does
 
@@ -128,7 +128,7 @@ From the repository root:
 
 ```bash
 cp deploy/examples/.env.example .env
-# Set PGPASSWORD. Change DB_HOST_PORT, API_HOST_PORT, or OLLAMA_HOST_PORT if needed.
+# Set PGPASSWORD and ANZMA_API_TOKEN with secure local values. Change host ports if needed.
 docker compose --env-file .env -p anzma-insight -f deploy/compose/docker-compose.yml up -d --build
 ```
 
@@ -143,7 +143,7 @@ curl -i http://localhost:8000/health
 curl -i http://localhost:8000/ready
 ```
 
-Expected bodies are `{"status":"ok"}` from `/health` and `{"status":"ready","database":"up"}` from `/ready`. The port variables in `.env` change host ports while container ports remain fixed.
+Expected bodies are `{"status":"ok"}` from `/health` and `{"status":"ready","database":"up"}` from `/ready`. `/health`, `/ready`, and static dashboard files are public. Data/control REST routes and Socket.IO require the API bearer token. The dashboard exchanges the token for an eight-hour HttpOnly, SameSite=Strict cookie. The port variables in `.env` change host ports while container ports remain fixed.
 
 To rebuild only the API after changing application or dashboard files:
 
@@ -151,7 +151,7 @@ To rebuild only the API after changing application or dashboard files:
 docker compose --env-file .env -p anzma-insight -f deploy/compose/docker-compose.yml up -d --build api
 ```
 
-The PostgreSQL initialization scripts run only when the database volume is empty. Existing volumes are not reseeded automatically; apply migrations 006–008 to an existing database with the runner documented in [`DATA_MIGRATION_PLAN.md`](DATA_MIGRATION_PLAN.md). Avoid `down -v` for routine restarts: it deletes the local PostgreSQL data and downloaded Ollama models. Compose publishes PostgreSQL and Ollama host ports by default; neither surface is authenticated. Restrict network access or use host firewall rules for local-only deployments. Compose services and initialization mounts are defined in [`deploy/compose/docker-compose.yml`](../deploy/compose/docker-compose.yml).
+The PostgreSQL initialization scripts run only when the database volume is empty. Existing volumes are not reseeded automatically; apply migrations 006–008 to an existing database with the runner documented in [`DATA_MIGRATION_PLAN.md`](DATA_MIGRATION_PLAN.md). Avoid `down -v` for routine restarts: it deletes the local PostgreSQL data and downloaded Ollama models. Compose binds PostgreSQL and Ollama to loopback by default; external publication requires an explicit bind-address override and network controls. Compose services and initialization mounts are defined in [`deploy/compose/docker-compose.yml`](../deploy/compose/docker-compose.yml).
 
 If Ollama or its model is unavailable, database-backed dashboard features continue to work and explanations can use the deterministic fallback. The AI runtime is optional for normal dashboard operation.
 
@@ -192,7 +192,7 @@ The v1 ingestion contract, response semantics, API-key lifecycle, and provisioni
 ## Project status and limitations
 
 - The default dataset is synthetic and is loaded only when PostgreSQL initializes an empty volume.
-- The demo does not authenticate users or directly connect to building devices.
+- The demo uses a shared deployment bearer token for operational dashboard/API and Socket.IO access; ingestion has separate source-scoped keys. It does not directly connect to building devices.
 - Incident resolution is an operator workflow state; linked alert records and covered fault observations are updated, but missing/stale data can still leave the asset in Warning.
 - Recommendations are advisory. The application does not execute actions on HVAC, networking, access, CCTV, or fire-alarm equipment.
 - Historical verification notes in `docs/` describe their recorded runs; they are not evidence that the current workspace or container has just been tested.

@@ -651,7 +651,7 @@ Each record is validated in this order; the first failure rejects it.
 | Errors | Never reveal whether a source exists. Missing Authorization is `401 AUTH_MISSING`; a malformed, unknown, revoked, or expired key is `401 AUTH_INVALID` or `403 SOURCE_DISABLED` as applicable. |
 | Development | Provision a source key with `scripts/ingestion_admin.py`; there is no unauthenticated development bypass. |
 
-**Context.** The existing API, Socket.IO and database port currently have no authentication (ISS-015). Ingestion must be the first protected surface even if the rest is not yet.
+**Context.** Ingestion authentication remains separate from normal user access. Operational REST routes and Socket.IO require the deployment's `ANZMA_API_TOKEN`; the browser exchanges it for an eight-hour HttpOnly, SameSite=Strict cookie. `/health`, `/ready`, and static dashboard assets are intentionally public for local operation/health checks. PostgreSQL and Ollama host ports bind to loopback by default. Use HTTPS and set `ANZMA_COOKIE_SECURE=true` when the API is accessed through TLS.
 
 ### 11.1 Provision a source and send the first batch
 
