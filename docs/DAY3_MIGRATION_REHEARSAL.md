@@ -347,15 +347,76 @@ Observed result: checks 1–10 were `OK`; check 99 was `OVERALL | all OK | OK` (
 
 ## API snapshot comparison
 
-Compared the restored+migrated API before adding ingestion test data with all fields in the supplied snapshots:
+**Correction recorded 19 November 2026:** the original item 0.5 report said zero differences but did not preserve the response files, command, or hashes. That statement was too broad. A fresh H0 restore+migration reproduction on the isolated `anzma-item07-compare` stack captured raw endpoint bodies before adding ingestion test data. The comparison included every field; no paths were ignored.
+
+Raw SHA-256 results:
+
+```text
+4d1afe88f69a06e9f5e160ad77de22fd31d1a0c41a483958e4c24cc63f31c152  H0_api_20261118_1959/dashboard_overview.json
+2035226a11a30266c3e2dde2e29cb8b6179a3d8cb20e5fe645e0248601743726  item07-dashboard_overview.json
+2b882b4e3b4ecfcc176b62c749ce219ee032cc5a5d3bc83e82e2d19ffad895b6  H0_api_20261118_1959/alerts.json
+2b882b4e3b4ecfcc176b62c749ce219ee032cc5a5d3bc83e82e2d19ffad895b6  item07-alerts.json
+43df1c64294565ad2fdc7141c6a6d40451ab098852ab4df9768421e34ba6c6d7  H0_api_20261118_1959/incidents.json
+43df1c64294565ad2fdc7141c6a6d40451ab098852ab4df9768421e34ba6c6d7  item07-incidents.json
+```
+
+Raw response capture commands (run inside the isolated API container, redirecting bytes to `/private/tmp`):
+
+```sh
+docker exec anzma-item07-compare-api-1 python -c "import urllib.request,sys; sys.stdout.buffer.write(urllib.request.urlopen('http://127.0.0.1:8000/dashboard/overview').read())" > /private/tmp/item07-dashboard_overview.json
+docker exec anzma-item07-compare-api-1 python -c "import urllib.request,sys; sys.stdout.buffer.write(urllib.request.urlopen('http://127.0.0.1:8000/alerts?limit=50&offset=0').read())" > /private/tmp/item07-alerts.json
+docker exec anzma-item07-compare-api-1 python -c "import urllib.request,sys; sys.stdout.buffer.write(urllib.request.urlopen('http://127.0.0.1:8000/incidents').read())" > /private/tmp/item07-incidents.json
+sha256sum /Users/test/anzma_backups/H0_api_20261118_1959/*.json /private/tmp/item07-*.json
+```
+
+Raw unified diff command (the minified JSON bodies are each one long line):
+
+```text
+diff -u /Users/test/anzma_backups/H0_api_20261118_1959/dashboard_overview.json /private/tmp/item07-dashboard_overview.json || true
+```
+
+The one changed dashboard value in that raw line was `"avg_zone_temp","value":17.872061855670097` versus `"avg_zone_temp","value":17.8720618556701`. The recursive JSON comparison command used to locate the path was:
+
+```sh
+python3 - <<'PY'
+import json
+from pathlib import Path
+pairs=[('/Users/test/anzma_backups/H0_api_20261118_1959/dashboard_overview.json','/private/tmp/item07-dashboard_overview.json'),('/Users/test/anzma_backups/H0_api_20261118_1959/alerts.json','/private/tmp/item07-alerts.json'),('/Users/test/anzma_backups/H0_api_20261118_1959/incidents.json','/private/tmp/item07-incidents.json')]
+def walk(a,b,path='$'):
+ out=[]
+ if type(a) is not type(b): return [(path,a,b)]
+ if isinstance(a,dict):
+  for k in sorted(set(a)|set(b)):
+   if k not in a or k not in b: out.append((path+'.'+k,a.get(k,'<MISSING>'),b.get(k,'<MISSING>')))
+   else: out.extend(walk(a[k],b[k],path+'.'+k))
+ elif isinstance(a,list):
+  if len(a)!=len(b): out.append((path+'.length',len(a),len(b)))
+  for i,(x,y) in enumerate(zip(a,b)): out.extend(walk(x,y,f'{path}[{i}]'))
+ elif a!=b: out.append((path,a,b))
+ return out
+for old,new in pairs:
+ diffs=walk(json.loads(Path(old).read_text()),json.loads(Path(new).read_text()))
+ print(f'{Path(old).name}: differences={len(diffs)}')
+ for d in diffs: print(d)
+PY
+```
+
+Observed recursive output:
+
+```text
+dashboard_overview.json: differences=1
+('$.kpis[5].value', 17.872061855670097, 17.8720618556701)
+alerts.json: differences=0
+incidents.json: differences=0
+```
+
+The dashboard value is the average zone temperature and differs by about `3e-15` (only the final floating-point digit); every other dashboard field matches. The alerts and incidents raw files are byte-identical to their snapshots. The original statement “zero differences” is superseded by this correction. No time-dependent fields were ignored.
 
 | Snapshot | Endpoint | Differences |
 |---|---|---:|
-| `dashboard_overview.json` | `GET /dashboard/overview` | 0 |
+| `dashboard_overview.json` | `GET /dashboard/overview` | 1 numeric serialization/precision delta |
 | `alerts.json` | `GET /alerts?limit=50&offset=0` | 0 |
 | `incidents.json` | `GET /incidents` | 0 |
-
-The comparison included every timestamp, window value, count, label, and record field. **No time-dependent fields were ignored.** No API data difference required explanation.
 
 ## Ingestion and backward-compatibility path
 

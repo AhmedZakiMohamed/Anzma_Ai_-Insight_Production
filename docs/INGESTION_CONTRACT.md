@@ -682,7 +682,13 @@ docker compose --env-file .env -p anzma-insight -f deploy/compose/docker-compose
 
 ```sh
 API_URL=http://localhost:8000
-read -r -s -p 'API key: ' API_KEY; printf '\n'
+printf 'API key: '
+stty -echo
+trap 'stty echo' EXIT
+IFS= read -r API_KEY
+stty echo
+trap - EXIT
+printf '\n'
 OBSERVED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 BATCH_ID=$(python3 -c 'import uuid; print(uuid.uuid4())')
 curl -sS -i -X POST "$API_URL/api/v1/ingest/batches" \

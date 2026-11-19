@@ -1,8 +1,22 @@
 # Productization implementation report
 
-**Review date:** 18 November 2026  
-**Checkout:** `feature/ingestion-foundation` (uncommitted implementation changes)
+**Review date:** 19 November 2026
+**Checkout:** `feature/ingestion-foundation`; code implementation at `a9de778cf0793a530ae6e347480f07820c17ab7d`
 **Scope:** Core only. No vendor connector or Milestone work.
+
+## Phase 0 completion summary
+
+| Item | Status | Evidence file |
+|---|---|---|
+| 0.1 — disposable baseline and regression capture | PASS | [`DAY3_FUNCTIONAL_TEST_REPORT.md`](DAY3_FUNCTIONAL_TEST_REPORT.md) |
+| 0.2 — order-independent CRAC equipment-health regression | PASS | [`DAY3_FUNCTIONAL_TEST_REPORT.md`](DAY3_FUNCTIONAL_TEST_REPORT.md), [`DAY3_MIGRATION_REHEARSAL.md`](DAY3_MIGRATION_REHEARSAL.md) |
+| 0.3 — event source identity migration | PASS | [`DAY3_MIGRATION_REHEARSAL.md`](DAY3_MIGRATION_REHEARSAL.md) |
+| 0.4 — ingestion code aligned to contract | PASS | [`INGESTION_CONTRACT.md`](INGESTION_CONTRACT.md), [`DAY3_FUNCTIONAL_TEST_REPORT.md`](DAY3_FUNCTIONAL_TEST_REPORT.md) |
+| 0.5 — H0 restore/migration and API rehearsal | PASS | [`DAY3_MIGRATION_REHEARSAL.md`](DAY3_MIGRATION_REHEARSAL.md) |
+| 0.6 — all 16 conformance vectors | PASS | [`DAY3_FUNCTIONAL_TEST_REPORT.md`](DAY3_FUNCTIONAL_TEST_REPORT.md), [`INGESTION_CONTRACT.md`](INGESTION_CONTRACT.md) §13.3 |
+| 0.7 — evidence reports and clean-clone deployment verification | PASS with release limitations recorded | [`DAY3_DEPLOYMENT_VERIFICATION.md`](DAY3_DEPLOYMENT_VERIFICATION.md), [`DAY3_DATA_VALIDATION.md`](DAY3_DATA_VALIDATION.md), [`KNOWN_ISSUES.md`](../KNOWN_ISSUES.md), [`RELEASE_CHECKLIST_v0.1.md`](RELEASE_CHECKLIST_v0.1.md) |
+
+Phase 0 item statuses do not authorize a live migration or release tag. Live/shared migration remains untested; release gates and current risks are in the checklist and known-issues file.
 
 ## Executive report
 
@@ -62,7 +76,7 @@ All 32 repository Markdown files were inventoried. The authoritative architectur
 | `docs/MODULAR_ARCHITECTURE.md` | Modularization proposal. | Supports Core/connector separation; proposed target only. |
 | `docs/REPOSITORY_RESTRUCTURE_PLAN.md` | Earlier restructuring plan. | References a different branch/layout; retain as historical, not current repository map. |
 | `docs/SPRINT_1_IMPLEMENTATION_PLAN.md` | Sprint work plan. | Planning record; should be reconciled after design decisions and implementation. |
-| `docs/DEPLOYMENT_STANDARD.md` | Deployment conventions. | Setup guidance; does not implement migration-on-existing-volume. |
+| `docs/DEPLOYMENT_STANDARD.md` | Local deployment instructions and 19 November clean-clone evidence pointer. | Local clean install and readiness steps verified; production security/upgrade rollout remains unverified. |
 | `docs/RUN_DEMO.md` | Demo operating instructions. | Applies to synthetic demo; not proof of live connector behavior. |
 | `docs/DATABASE_BASELINE.md` | Historical pre-006 schema baseline plus migration 006–008 pointers. | Distinguishes the inspected shared database from the repository target. |
 | `docs/RUNTIME_VERIFICATION.md` | Dated runtime verification record. | Historical verification; does not establish this review's API connectivity. |
@@ -159,4 +173,4 @@ Added migration `008_ingestion_contract_conformance.sql`; it only adds nullable/
 
 Final verification on the disposable Compose project `anzma-phase0-20261119` (not the shared `anzma-insight` DB): unit **28/28**, data integrity **23/23**, frontend/API plus all conformance vectors **21/21**, Day 2 operational intelligence **43/43**, E2E S1 **14/14**, chat consistency **31/31**. Dashboard smoke command `PYTHONPATH=/app python tests/integration/test_dashboard.py` returned KPIs for 12 assets. Migration runner applied 008 once, then skipped it on rerun; read-only `scripts/verify_schema.sql` returned **OVERALL OK** (20 tables, 8 views). `py_compile` and `git diff --check` passed after the code changes. The first API test attempt exposed old 2000 timestamps in a fixture; these were moved to within the contract's accepted range, not used to weaken any assertion.
 
-Known historical-doc discrepancies found in Step A were reconciled: the old route inventory/proposal in `API_CONTRACT_V1.md` and `API_CONTRACT.md` is labeled historical for ingestion; the canonical model's draft JSON examples are explicitly superseded by the ingestion contract; DB mapping batch key now says `batch_id`; the historian design and migration plan no longer claim ingestion is unimplemented. No 0.5, 0.7, or Phase 1 work was started. The shared DB is unchanged.
+At the time this Phase 0.4/0.6 section was written, items 0.5 and 0.7 had not yet been completed. Their subsequent evidence is listed in the Phase 0 completion table above. No Phase 1 work was started. The shared database remains unchanged.
