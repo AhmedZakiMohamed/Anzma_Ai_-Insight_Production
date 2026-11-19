@@ -40,11 +40,14 @@ from app.domain.incidents import incident_engine as inc
 from app.services import pipeline
 from app.services import ingestion
 from app.services import rate_limit
-from app.security import authenticator, socket_authenticate, token_from_authorization
+from app.security import (authenticator, configure_cors, cors_origins_from_env, socket_authenticate,
+                          socketio_cors_origins, token_from_authorization)
 
 
 # Every route below is registered on `api`; `asgi_app` (bottom of the file) wraps it with Socket.IO for live alerts.
 api = FastAPI(title="Anzma Dashboard API")
+CORS_ALLOWED_ORIGINS = cors_origins_from_env()
+configure_cors(api, CORS_ALLOWED_ORIGINS)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "dashboard", "static")
 logger = logging.getLogger("anzma")
@@ -661,7 +664,7 @@ def create_event(body: EventCreate):
         raise
     except DB_ERRORS as exc:
         raise HTTPException(503, str(exc))
-sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins=None)
+sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins=socketio_cors_origins(CORS_ALLOWED_ORIGINS))
 
 
 @sio.event
