@@ -67,6 +67,8 @@ cp deploy/examples/.env.example .env
 # PGPASSWORD set to a disposable local value; host ports set to 15437, 18006, and 11435.
 ```
 
+**Evidence limit:** the literal shell invocation used to edit `.env` was not retained in the run transcript, so it is not reconstructed here. The port values and successful compose output are retained; the disposable password is intentionally redacted. This is a command-record gap in the rehearsal evidence.
+
 Start the new project from the clone with empty volumes:
 
 ```sh
