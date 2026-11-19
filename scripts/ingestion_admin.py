@@ -5,16 +5,46 @@ The generated API key is printed once by create-source/rotate-key. Store it in a
 from __future__ import annotations
 
 import argparse
+import getpass
 import hashlib
+import json
+import logging
 import os
 import secrets
+import socket
 import sys
 from pathlib import Path
+from datetime import datetime, timezone
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from app.adapters.database import db_adapter as da
+
+
+AUDIT_LOGGER = logging.getLogger("anzma.audit")
+AUDIT_LOGGER.setLevel(logging.INFO)
+AUDIT_LOGGER.propagate = False
+if not any(getattr(handler, "_anzma_audit_handler", False) for handler in AUDIT_LOGGER.handlers):
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    handler._anzma_audit_handler = True
+    AUDIT_LOGGER.addHandler(handler)
+
+
+def audit_event(event: str, source_code: str, key_prefix: str | None,
+                credential_id: int | None, outcome: str) -> None:
+    record = {
+        "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "event": event,
+        "source_code": source_code,
+        "key_prefix": key_prefix,
+        "credential_id": credential_id,
+        "actor": os.getenv("ANZMA_AUDIT_ACTOR") or getpass.getuser(),
+        "outcome": outcome,
+        "host": socket.gethostname(),
+    }
+    AUDIT_LOGGER.info(json.dumps(record, separators=(",", ":"), ensure_ascii=False))
 
 
 def connect():
@@ -25,7 +55,7 @@ def connect():
     )
 
 
-def issue_key(cur, source_id: int) -> str:
+def issue_key(cur, source_id: int) -> tuple[str, str, int]:
     secret = secrets.token_urlsafe(32)
     prefix = secrets.token_hex(6)
     token = f"azk_{prefix}_{secret}"
@@ -34,8 +64,8 @@ def issue_key(cur, source_id: int) -> str:
         """INSERT INTO source_credentials (source_id, key_prefix, key_hash)
            VALUES (%s,%s,%s) RETURNING credential_id""", (source_id, prefix, digest)
     )
-    cur.fetchone()
-    return token
+    credential_id = cur.fetchone()["credential_id"]
+    return token, prefix, credential_id
 
 
 def main() -> int:
@@ -65,8 +95,14 @@ def main() -> int:
     backdate_limit.add_argument("--use-default", action="store_true", help="clear the override; default is 90 days")
     args = parser.parse_args()
 
-    conn = connect()
+    audit_events = {"create-source": "KEY_CREATED", "rotate-key": "KEY_ROTATED", "revoke-key": "KEY_REVOKED"}
+    event = audit_events.get(args.command)
+    audit_context = ({"event": event, "source_code": getattr(args, "source_code", ""),
+                      "key_prefix": getattr(args, "key_prefix", None), "credential_id": None,
+                      "emitted": False} if event else None)
+    conn = None
     try:
+        conn = connect()
         with conn.cursor() as cur:
             if args.command == "create-source":
                 cur.execute("SELECT building_id FROM buildings WHERE building_code = %s", (args.building_code,))
@@ -79,8 +115,12 @@ def main() -> int:
                     (args.source_code, building["building_id"], args.connector_name, args.connector_version),
                 )
                 source_id = cur.fetchone()["source_id"]
-                key = issue_key(cur, source_id)
+                audit_context["source_code"] = args.source_code
+                key, key_prefix, credential_id = issue_key(cur, source_id)
+                audit_context.update(key_prefix=key_prefix, credential_id=credential_id)
                 conn.commit()
+                audit_event(event, args.source_code, key_prefix, credential_id, "SUCCESS")
+                audit_context["emitted"] = True
                 print(f"Source created: {args.source_code}")
                 print(f"API key (shown once): {key}")
                 print("Store this value in a secret manager; only its SHA-256 hash is stored in PostgreSQL.")
@@ -98,8 +138,11 @@ def main() -> int:
                 source = cur.fetchone()
                 if not source:
                     raise ValueError("Unknown source code.")
-                key = issue_key(cur, source["source_id"])
+                key, key_prefix, credential_id = issue_key(cur, source["source_id"])
+                audit_context.update(key_prefix=key_prefix, credential_id=credential_id)
                 conn.commit()
+                audit_event(event, args.source_code, key_prefix, credential_id, "SUCCESS")
+                audit_context["emitted"] = True
                 print(f"New API key for {args.source_code} (shown once): {key}")
                 print("The previous credential remains active until explicitly revoked.")
             elif args.command == "revoke-key":
@@ -110,9 +153,17 @@ def main() -> int:
                          AND c.key_prefix = %s AND c.revoked_at IS NULL
                        RETURNING c.credential_id""", (args.source_code, args.key_prefix),
                 )
-                if not cur.fetchone():
+                row = cur.fetchone()
+                if not row:
+                    conn.commit()
+                    audit_event(event, args.source_code, args.key_prefix, None, "NOT_FOUND")
+                    audit_context["emitted"] = True
                     raise ValueError("Active credential not found for that source and prefix.")
+                credential_id = row["credential_id"]
+                audit_context.update(credential_id=credential_id)
                 conn.commit()
+                audit_event(event, args.source_code, args.key_prefix, credential_id, "SUCCESS")
+                audit_context["emitted"] = True
                 print(f"Revoked key prefix {args.key_prefix} for {args.source_code}.")
             elif args.command == "set-backdate-limit":
                 cur.execute("""UPDATE data_sources SET max_backdate_days=%s WHERE source_code=%s
@@ -154,10 +205,15 @@ def main() -> int:
                     print(f"Mapped {args.source_code}:{args.external_id} to {args.asset_code}.")
                 conn.commit()
     except Exception:
-        conn.rollback()
+        if conn is not None:
+            conn.rollback()
+        if audit_context and not audit_context["emitted"]:
+            audit_event(audit_context["event"], audit_context["source_code"],
+                        audit_context["key_prefix"], audit_context["credential_id"], "FAILED")
         raise
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
     return 0
 
 

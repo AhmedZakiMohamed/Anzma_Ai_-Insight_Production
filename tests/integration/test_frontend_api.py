@@ -9,6 +9,8 @@ import sys
 from datetime import timedelta
 from datetime import datetime, timezone
 import hashlib
+import json
+import re
 import secrets
 import subprocess
 import uuid
@@ -968,6 +970,81 @@ def _():
         assert retried.json()["batch_id"] == retry_id
     finally:
         App.rate_limit.ingestion_rate_limiter = prior_limiter
+
+
+@test("ingestion admin audit: JSON lifecycle events, not-found/failure outcomes, and no key/hash disclosure")
+def _():
+    building_code = "API-INGEST-TEST"
+    source_code = f"audit-test-{uuid.uuid4().hex[:10]}"
+    env = os.environ.copy()
+    env["ANZMA_AUDIT_ACTOR"] = "test-operator"
+
+    def run(*args):
+        return subprocess.run([sys.executable, "scripts/ingestion_admin.py", *args],
+                              capture_output=True, text=True, env=env)
+
+    def audit_records(result):
+        found = []
+        for line in result.stderr.splitlines():
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if record.get("event", "").startswith("KEY_"):
+                found.append((line, record))
+        return found
+
+    created = run("create-source", "--source-code", source_code, "--building-code", building_code,
+                  "--connector-name", "audit-test", "--connector-version", "1")
+    assert created.returncode == 0
+    key1 = re.search(r"API key \(shown once\): (\S+)", created.stdout).group(1)
+    prefix1 = key1.split("_")[1]
+    create_records = audit_records(created)
+    assert len(create_records) == 1
+    create_line, create_audit = create_records[0]
+    credential1 = one("SELECT credential_id FROM source_credentials WHERE key_prefix=%s", prefix1)["credential_id"]
+    assert create_audit == {"timestamp": create_audit["timestamp"], "event": "KEY_CREATED",
+                            "source_code": source_code, "key_prefix": prefix1,
+                            "credential_id": credential1, "actor": "test-operator",
+                            "outcome": "SUCCESS", "host": create_audit["host"]}
+    assert create_audit["timestamp"].endswith("Z") and key1 not in create_line
+    assert hashlib.sha256(key1.encode()).hexdigest() not in create_line
+
+    rotated = run("rotate-key", "--source-code", source_code)
+    assert rotated.returncode == 0
+    key2 = re.search(r"New API key for .* \(shown once\): (\S+)", rotated.stdout).group(1)
+    prefix2 = key2.split("_")[1]
+    rotate_records = audit_records(rotated)
+    assert len(rotate_records) == 1
+    rotate_line, rotate_audit = rotate_records[0]
+    credential2 = one("SELECT credential_id FROM source_credentials WHERE key_prefix=%s", prefix2)["credential_id"]
+    assert rotate_audit["event"] == "KEY_ROTATED" and rotate_audit["outcome"] == "SUCCESS"
+    assert rotate_audit["source_code"] == source_code and rotate_audit["key_prefix"] == prefix2
+    assert rotate_audit["credential_id"] == credential2 and rotate_audit["actor"] == "test-operator"
+    assert key2 not in rotate_line and hashlib.sha256(key2.encode()).hexdigest() not in rotate_line
+
+    revoked = run("revoke-key", "--source-code", source_code, "--key-prefix", prefix2)
+    assert revoked.returncode == 0
+    revoke_records = audit_records(revoked)
+    assert len(revoke_records) == 1
+    revoke_line, revoke_audit = revoke_records[0]
+    assert revoke_audit["event"] == "KEY_REVOKED" and revoke_audit["outcome"] == "SUCCESS"
+    assert revoke_audit["source_code"] == source_code and revoke_audit["key_prefix"] == prefix2
+    assert revoke_audit["credential_id"] == credential2 and key2 not in revoke_line
+    assert hashlib.sha256(key2.encode()).hexdigest() not in revoke_line
+
+    missing = run("revoke-key", "--source-code", source_code, "--key-prefix", "abcdef123456")
+    assert missing.returncode != 0
+    missing_records = audit_records(missing)
+    assert len(missing_records) == 1 and missing_records[0][1]["event"] == "KEY_REVOKED"
+    assert missing_records[0][1]["outcome"] == "NOT_FOUND"
+
+    failed_create = run("create-source", "--source-code", source_code, "--building-code", building_code,
+                        "--connector-name", "audit-test", "--connector-version", "1")
+    assert failed_create.returncode != 0
+    failed_records = audit_records(failed_create)
+    assert len(failed_records) == 1 and failed_records[0][1]["event"] == "KEY_CREATED"
+    assert failed_records[0][1]["outcome"] == "FAILED"
 
 
 if __name__ == "__main__":

@@ -46,6 +46,7 @@ Defaults differ across reviewed modules, and Compose does not pass every runtime
 - Never put credentials in Dockerfiles, source, images, logs, or example commands.
 - Use a protected local environment file for development and the deployment platform's secret mechanism for customer installs.
 - Rotate credentials through deployment configuration, not source edits.
+- **Credential audit log:** `scripts/ingestion_admin.py` emits one JSON line to stderr after each committed key creation, rotation, or revocation. Example: `{"timestamp":"2026-11-19T14:30:00Z","event":"KEY_ROTATED","source_code":"ahu-east","key_prefix":"a1b2c3d4e5f6","credential_id":42,"actor":"operator","outcome":"SUCCESS","host":"api-host"}`. Capture the CLI process stderr with the operator/central log collector; for a local Docker exec, append stderr only to a protected audit file (`2>>/secure/path/credential-audit.jsonl`). Do not capture stdout, because the existing CLI prints the one-time key there. Audit records contain no key or hash.
 - Do not expose PostgreSQL or Ollama ports outside the intended network without an explicit deployment decision.
 
 ## 5. Database initialization and migrations
