@@ -17,7 +17,7 @@ services:
       - ../../db/migrations/007_event_source_identity.sql:/docker-entrypoint-initdb.d/06-event-source-identity.sql:ro
       - ../../db/migrations/008_ingestion_contract_conformance.sql:/docker-entrypoint-initdb.d/07-ingestion-contract-conformance.sql:ro
     ports:
-      - "${DB_HOST_PORT:-5432}:5432"
+      - "${DB_BIND_ADDRESS:-127.0.0.1}:${DB_HOST_PORT:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${PGUSER:-postgres} -d ${PGDATABASE:-anzma}"]
       interval: 5s
@@ -32,7 +32,7 @@ services:
     volumes:
       - ollama_models:/root/.ollama
     ports:
-      - "${OLLAMA_HOST_PORT:-11434}:11434"
+      - "${OLLAMA_BIND_ADDRESS:-127.0.0.1}:${OLLAMA_HOST_PORT:-11434}:11434"
     healthcheck:
       test: ["CMD", "ollama", "list"]
       interval: 10s
@@ -76,6 +76,8 @@ services:
       OLLAMA_HOST: http://ollama:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
       OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-120}
+      ANZMA_API_TOKEN: ${ANZMA_API_TOKEN:?Set ANZMA_API_TOKEN in .env}
+      ANZMA_COOKIE_SECURE: ${ANZMA_COOKIE_SECURE:-false}
     # Only the DB is a hard dependency. The app falls back gracefully when
     # Ollama is down or the model is still downloading.
     depends_on:

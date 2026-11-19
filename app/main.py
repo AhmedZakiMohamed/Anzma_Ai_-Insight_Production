@@ -37,6 +37,7 @@ from app.domain.evidence import evidence as evd
 from app.domain.incidents import incident_engine as inc
 from app.services import pipeline
 from app.services import ingestion
+from app.security import authenticator, socket_authenticate, token_from_authorization
 
 
 # Every route below is registered on `api`; `asgi_app` (bottom of the file) wraps it with Socket.IO for live alerts.
@@ -45,14 +46,33 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "dashboard", "static")
 logger = logging.getLogger("anzma")
 
+
+@api.middleware("http")
+async def authenticate_user_api(request: Request, call_next):
+    """Protect every operational REST route; keep liveness, UI assets and ingestion auth separate."""
+    path = request.url.path
+    public = path in {"/", "/dashboard", "/health", "/ready", "/auth/session", "/auth/logout",
+                      "/docs", "/redoc", "/openapi.json"} or path.startswith("/static/")
+    is_ingestion = path.startswith("/api/v1/ingest/")
+    if not public and not is_ingestion:
+        authorization = request.headers.get("authorization")
+        token = token_from_authorization(authorization) or request.cookies.get("anzma_session")
+        if not authorization and not token:
+            return JSONResponse(status_code=401, content={"detail": {"code": "AUTH_MISSING",
+                "message": "Bearer credentials are required."}}, headers={"WWW-Authenticate": "Bearer"})
+        if not authenticator.authenticate(token):
+            return JSONResponse(status_code=401, content={"detail": {"code": "AUTH_INVALID",
+                "message": "Bearer credentials are invalid."}}, headers={"WWW-Authenticate": "Bearer"})
+    return await call_next(request)
+
 # a lost / unreachable database from either driver, or from the Day 2 adapter, is a 503, never a crash
 DB_ERRORS = (OperationalError, psycopg2.OperationalError, da.DatabaseUnavailable)
 
 api.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
-@api.get("/", include_in_schema=False)
-@api.get("/dashboard", include_in_schema=False)
+@api.get("/", include_in_schema=False, dependencies=[])
+@api.get("/dashboard", include_in_schema=False, dependencies=[])
 def dashboard():
     return FileResponse(os.path.join(STATIC_DIR, "dashboard.html"))
 
@@ -70,13 +90,13 @@ def day2_connect(**options):
     )
 
 
-@api.get("/health")
+@api.get("/health", dependencies=[])
 def health():
     """Liveness only: the process is up. It does not look at the database."""
     return {"status": "ok"}
 
 
-@api.get("/ready")
+@api.get("/ready", dependencies=[])
 def ready():
     """Readiness: 200 only while the database answers a query, otherwise 503 (no connection details in the reply)."""
     try:
@@ -91,6 +111,30 @@ def ready():
         logger.warning("readiness check failed: %s", str(exc).strip()[:200])
         return JSONResponse(status_code=503, content={"status": "not_ready", "database": "down"})
     return {"status": "ready", "database": "up"}
+
+
+@api.post("/auth/session", dependencies=[])
+def create_user_session(request: Request, authorization: str | None = Header(default=None)):
+    """Exchange an operator-provided bearer secret for a short-lived HttpOnly browser cookie."""
+    if not authorization:
+        return JSONResponse(status_code=401, content={"detail": {"code": "AUTH_MISSING",
+            "message": "Bearer credentials are required."}}, headers={"WWW-Authenticate": "Bearer"})
+    token = token_from_authorization(authorization)
+    if not authenticator.authenticate(token):
+        return JSONResponse(status_code=401, content={"detail": {"code": "AUTH_INVALID",
+            "message": "Bearer credentials are invalid."}}, headers={"WWW-Authenticate": "Bearer"})
+    response = JSONResponse({"status": "authenticated"})
+    response.set_cookie("anzma_session", token, max_age=8 * 60 * 60, httponly=True,
+                        secure=os.getenv("ANZMA_COOKIE_SECURE", "false").lower() == "true",
+                        samesite="strict", path="/")
+    return response
+
+
+@api.post("/auth/logout", dependencies=[])
+def delete_user_session():
+    response = JSONResponse({"status": "logged_out"})
+    response.delete_cookie("anzma_session", path="/", httponly=True, samesite="strict")
+    return response
 
 
 @api.get("/dashboard/filters")
@@ -344,7 +388,7 @@ def _ingestion_error_response(exc: ingestion.IngestionError):
     return JSONResponse(status_code=exc.status, content=exc.response(exc.batch_id))
 
 
-@api.post("/api/v1/ingest/batches", tags=["Ingestion"])
+@api.post("/api/v1/ingest/batches", tags=["Ingestion"], dependencies=[])
 def ingest_batch(body: IngestionBatch, request: Request,
                  authorization: str | None = Header(default=None)):
     """Ingest a canonical batch. Existing POST /events and POST /alerts remain unchanged."""
@@ -393,7 +437,7 @@ def ingest_batch(body: IngestionBatch, request: Request,
             retryable=True, batch_id=batch_id).response())
 
 
-@api.get("/api/v1/ingest/batches/{batch_id}", tags=["Ingestion"])
+@api.get("/api/v1/ingest/batches/{batch_id}", tags=["Ingestion"], dependencies=[])
 def get_ingestion_batch(batch_id: str, authorization: str | None = Header(default=None)):
     """Return the recorded per-record outcomes and complete rejection payloads for this source's batch."""
     try:
@@ -587,7 +631,17 @@ def create_event(body: EventCreate):
         raise
     except DB_ERRORS as exc:
         raise HTTPException(503, str(exc))
-sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
+sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins=None)
+
+
+@sio.event
+async def connect(sid, environ, auth=None):
+    """Socket.IO shares the user API bearer token, separately from ingestion keys."""
+    if not socket_authenticate(auth, environ.get("HTTP_COOKIE")):
+        return False
+    return True
+
+
 DETECT_INTERVAL = int(os.getenv("DETECT_INTERVAL", "60"))        # seconds between automatic detection runs
 POLL_INTERVAL = int(os.getenv("ALERT_POLL_INTERVAL", "3"))       # seconds between checks for new alerts
 _background = []
@@ -630,6 +684,8 @@ async def _alert_loop():
 
 
 async def _startup():
+    if len(os.getenv("ANZMA_API_TOKEN", "")) < 32:
+        raise RuntimeError("ANZMA_API_TOKEN must contain at least 32 characters.")
     _background.append(asyncio.create_task(_alert_loop()))
 
 
