@@ -98,7 +98,7 @@ Implementation includes the additive migration, runner, provisioning CLI, versio
 
 - Post-change unit suite — **28/28 passed**; existing operational intelligence suite — **43/43 passed**; migration/data integrity suite — **21/21 passed**; E2E scenario — **14/14 passed**.
 - The shared database remains at pre-006 schema; all mutable integration suites ran against a separate disposable Compose volume/project.
-- Frontend/API integration suite — **19/20 passed**. The new v1 ingestion and legacy API compatibility tests passed. One existing seeded dashboard assertion expects CRAC to be non-critical after the same suite calls detection and opens a critical CRAC alert. The valid telemetry view retains every old NULL-quality fact; Day 2 and E2E operational checks pass.
+- Frontend/API integration suite on the Phase 0.1 baseline — **19/20**; resolved in Phase 0.2 below. The valid telemetry view retains every old NULL-quality fact; Day 2 and E2E operational checks pass.
 - Read-only `scripts/verify_schema.sql` on the isolated migrated database — **OVERALL OK** (20 tables, 7 views and expected indexes/columns). Python compilation and `git diff --check` pass. Docker build from registry was unavailable, so tests used a cached local API image with the current workspace mounted.
 - No migration was applied to the shared database; historical records there remain untouched.
 
@@ -122,3 +122,17 @@ The baseline was rerun on branch `feature/ingestion-foundation`, HEAD `139be55`,
 | `scripts/verify_schema.sql` via the DB adapter on fresh `anzma` | **OVERALL OK** | Expected tables, views, indexes, columns and constraints all passed. |
 
 The failing assertion is consistent with the earlier known baseline and has not been weakened or changed in item 0.1. Test output included the expected S1 CRAC alert as critical, so Phase 0.2 must establish whether order/state leakage or the assertion's post-detection assumption is wrong. The clean run is evidence for item 0.1 only; Phase 0 acceptance is not yet met.
+
+## Phase 0.2 — order-independent dashboard regression (19 November 2026)
+
+Diagnosis: the prior assertion examined the seeded CRAC after the test suite's earlier `POST /alerts/run` case had created an open critical alert. The dashboard correctly reports an asset with an open/acknowledged critical alert as `CRITICAL`; fault recovery events affect recovered event-state calculations but do not silently resolve an alert. The failure was a fixture/assumption collision caused by test ordering, not random application state leakage.
+
+Change: `tests/integration/test_frontend_api.py` now creates a temporary HVAC asset with a critical `hvac_fault` followed by `hvac_recovered`, then asserts that the historical `criticals`/`faults` remain visible while `active_criticals=0` and the status is non-critical. It separately asserts that the seeded CRAC status agrees with whether an open critical alert exists. The temporary asset and event rows are removed in `finally`. No production behavior or assertion intent was weakened.
+
+Verification on the clean disposable Compose stack:
+
+- Full command `env PGHOST=db PGDATABASE=anzma python tests/integration/test_frontend_api.py` — **20/20 passed**.
+- An isolated test invocation ran equipment-health before `/alerts/run`, then ran `/alerts/run`, then repeated equipment-health — **both order cases passed**.
+- `python3 -m py_compile tests/integration/test_frontend_api.py` — passed.
+
+The test now checks both original intent (a recovered fault remains historical, not active) and current dashboard behavior (a still-open critical alert remains critical) independently of test order.

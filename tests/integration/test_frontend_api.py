@@ -214,7 +214,7 @@ def _():
     assert peak > 30 and max(v for v in d["hvac_avg_temp"] if v is not None) > 18
 
 
-@test("GET /dashboard/equipment-health: one row per asset with the fields the table reads; critical first")
+@test("GET /dashboard/equipment-health: recovered history stays visible without an active critical; active alerts stay critical")
 def _():
     d = client.get("/dashboard/equipment-health", params={"hours": 72}).json()
     assert len(d["items"]) == 12 and d["window"]["to"]
@@ -223,9 +223,39 @@ def _():
     assert all(need <= set(i) for i in d["items"])
     rank = {"CRITICAL": 0, "WARNING": 1, "UNKNOWN": 2, "OK": 3}
     assert [rank[i["status"]] for i in d["items"]] == sorted(rank[i["status"]] for i in d["items"])
-    crac = next(i for i in d["items"] if i["name"] == "CRAC Unit 1")
-    assert crac["status"] != "CRITICAL" and crac["active_criticals"] == 0
-    assert crac["criticals"] >= 1 and crac["faults"] >= 1  # recovered event remains visible as history
+
+    # Use a dedicated fixture so this check has the same meaning whether it runs
+    # before or after another test has created active alerts on the seeded CRAC.
+    base_asset = one("""SELECT a.location_id, a.system_type_id FROM assets a
+                       JOIN system_types st USING(system_type_id) WHERE st.code='HVAC' LIMIT 1""")
+    fixture_name = f"Recovered Test Asset {uuid.uuid4().hex[:8]}"
+    fixture_code = f"TEST-RECOVERED-{uuid.uuid4().hex[:8]}"
+    fixture_id = one("""INSERT INTO assets(asset_code,name,asset_type,system_type_id,location_id)
+                       VALUES (%s,%s,'sensor',%s,%s) RETURNING asset_id""",
+                     fixture_code, fixture_name, base_asset["system_type_id"], base_asset["location_id"])["asset_id"]
+    fault_id = one("SELECT event_type_id FROM event_types WHERE name='hvac_fault'")["event_type_id"]
+    recovery_id = one("SELECT event_type_id FROM event_types WHERE name='hvac_recovered'")["event_type_id"]
+    anchor = one("SELECT max(ts) AS t FROM (SELECT ts FROM telemetry_records UNION ALL SELECT ts FROM event_records) u")["t"]
+    fault_ts, recovery_ts = anchor + timedelta(seconds=1), anchor + timedelta(minutes=1)
+    DB.execute("""INSERT INTO event_records(asset_id,event_type_id,ts,severity,details)
+                   VALUES (%s,%s,%s,'critical','{}'::jsonb),(%s,%s,%s,'info','{}'::jsonb)""",
+               (fixture_id, fault_id, fault_ts, fixture_id, recovery_id, recovery_ts))
+    try:
+        refreshed = client.get("/dashboard/equipment-health", params={"hours": 72}).json()
+        recovered = next(i for i in refreshed["items"] if i["name"] == fixture_name)
+        assert recovered["status"] != "CRITICAL" and recovered["active_criticals"] == 0
+        assert recovered["criticals"] == 1 and recovered["faults"] == 1
+
+        crac = next(i for i in refreshed["items"] if i["name"] == "CRAC Unit 1")
+        open_critical_alerts = one("""SELECT count(*) AS n FROM alerts WHERE asset_id=%s
+                                    AND severity='critical' AND status IN ('open','acknowledged')""",
+                                   next(i["asset_id"] for i in refreshed["items"] if i["name"] == "CRAC Unit 1"))["n"]
+        assert (crac["status"] == "CRITICAL") == (open_critical_alerts > 0)
+        assert crac["active_criticals"] >= open_critical_alerts
+    finally:
+        DB.execute("DELETE FROM event_records WHERE asset_id=%s", (fixture_id,))
+        DB.execute("DELETE FROM assets WHERE asset_id=%s", (fixture_id,))
+
     healthy = next(i for i in d["items"] if i["name"] == "Lobby Camera")
     assert healthy["status"] == "OK" and healthy["last_seen"]
     only = client.get("/dashboard/equipment-health", params={"hours": 72, "system_type": "CCTV"}).json()
