@@ -305,7 +305,10 @@ class FreshnessJobIntegrationTests(unittest.TestCase):
             cwd=ROOT, env=env, text=True, capture_output=True, check=False,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        summary = json.loads(result.stdout.strip())
+        records = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+        self.assertEqual([record["event"] for record in records],
+                         ["FRESHNESS_LOCK_ACQUIRED", "FRESHNESS_PASS", "FRESHNESS_LOCK_RELEASED"])
+        summary = records[1]
         self.assertEqual(summary["event"], "FRESHNESS_PASS")
         self.assertGreater(summary["series_evaluated"], 0)
         self.assertEqual(summary["series_evaluated"], sum(summary["states"].values()))

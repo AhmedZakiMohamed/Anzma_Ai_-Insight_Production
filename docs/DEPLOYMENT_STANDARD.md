@@ -20,6 +20,7 @@
 Docker Compose
   - Core API and dashboard
   - PostgreSQL with persistent storage
+  - Optional freshness evaluator profile (database-only service)
   - Optional Ollama service or externally managed local Ollama endpoint
 ```
 
@@ -37,6 +38,8 @@ The reviewed application reads `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPA
 | API security | `ANZMA_API_TOKEN` bearer secret for REST/Socket.IO; HttpOnly browser session cookie | Shared deployment identity only; deploy behind HTTPS and set `ANZMA_COOKIE_SECURE=true`; per-user identity/RBAC remains open |
 | Ingestion rate limit | `ANZMA_INGEST_RATE_LIMIT_PER_MIN` (60) and `ANZMA_INGEST_RATE_LIMIT_BURST` (10) | Per credential, in-memory per API process; invalid or nonpositive values fall back to defaults with a warning |
 | Cross-origin browser access | `ANZMA_CORS_ALLOWED_ORIGINS` | Empty by default (same-origin only); configure comma-separated exact `http://` or `https://` origins for both REST and Socket.IO. Wildcards and invalid entries are ignored with a warning. |
+| Freshness evaluator | `ANZMA_FRESHNESS_INTERVAL_SECONDS` (60), `ANZMA_FRESHNESS_LOCK_RETRY_SECONDS` (5) | Opt-in Compose profile; one PostgreSQL session advisory lock per database. Invalid or nonpositive values use the defaults with a warning. |
+| Source liveness | `ANZMA_SOURCE_SILENCE_MULTIPLIER` (3), `ANZMA_MASS_STALE_MIN_SERIES` (3), `ANZMA_MASS_STALE_PERCENT` (50) | Passed to the evaluator service and used only for evidence/classification; silence never creates OFFLINE or alerts. |
 
 Defaults differ across reviewed modules, and Compose does not pass every runtime setting consistently. The implementation must establish one settings source, consistent defaults, and explicit validation.
 
@@ -74,6 +77,8 @@ The current working tree has one bootstrap schema at `db/init/anzma_schema_and_s
 
 - Store PostgreSQL data in a named persistent volume or managed persistent location.
 - Replacing/restarting the application container must not erase operational history.
+- The freshness evaluator is a separate opt-in Compose service. It waits for PostgreSQL, holds a session advisory lock for its lifetime, and restarts after a failed pass. SIGTERM/SIGINT finish the active pass and release the lock. It does not need the API or Ollama service.
+- Start it with `docker compose --profile freshness up -d db freshness`; inspect output with `docker compose --profile freshness logs -f freshness`; stop it with `docker compose --profile freshness stop freshness`. The interval defaults to 60 seconds. Verify `FRESHNESS_PASS` log lines and monitor `evaluated_at`/snapshot age through the operator API; `FRESHNESS_PASS_FAILED` means that pass exited unsuccessfully and Compose will restart the process.
 - Keep application containers stateless unless a documented feature requires local state.
 - Decide whether included Ollama model files use persistent storage.
 - Document and verify backup/restore before commercial release.
