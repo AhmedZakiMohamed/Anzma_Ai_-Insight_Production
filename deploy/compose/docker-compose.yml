@@ -93,6 +93,34 @@ services:
       - "${API_HOST_PORT:-8000}:8000"
 
 
+  # Opt-in, database-only evaluator; the API container does not own its lifecycle.
+  freshness:
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile
+    profiles: ["freshness"]
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    command: ["python", "scripts/freshness_job.py", "--loop"]
+    environment:
+      PGHOST: db
+      PGPORT: "5432"
+      PGDATABASE: ${PGDATABASE:-anzma}
+      PGUSER: ${PGUSER:-postgres}
+      PGPASSWORD: ${PGPASSWORD:?Set PGPASSWORD in .env}
+      ANZMA_FRESHNESS_INTERVAL_SECONDS: ${ANZMA_FRESHNESS_INTERVAL_SECONDS:-60}
+      ANZMA_FRESHNESS_LOCK_RETRY_SECONDS: ${ANZMA_FRESHNESS_LOCK_RETRY_SECONDS:-5}
+      ANZMA_SOURCE_SILENCE_MULTIPLIER: ${ANZMA_SOURCE_SILENCE_MULTIPLIER:-3}
+      ANZMA_MASS_STALE_MIN_SERIES: ${ANZMA_MASS_STALE_MIN_SERIES:-3}
+      ANZMA_MASS_STALE_PERCENT: ${ANZMA_MASS_STALE_PERCENT:-50}
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+
+
 
 volumes:
   pgdata:
