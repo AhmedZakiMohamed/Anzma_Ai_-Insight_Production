@@ -1,6 +1,6 @@
 # Freshness, source health, gaps, and building schedules — design note
 
-**Phase 1 item 1.3. Decision: APPROVED with amendments, 2026-11-20.** The human approved this design with amendments A1–A6: expectation scopes follow contract §9 only (`ASSET_METRIC`, `ASSET_TYPE_METRIC`, `SOURCE`, `GLOBAL`); freshness is always-on and has no work-hours gating; a gap opens when freshness becomes `MISSING` with `gap_start=last_observed_at` and closes at the first new observation; backfill-driven gap splitting is deferred; freshness creates no alerts/incidents; only non-working weekdays are stored; building timezone/schedule columns remain nullable with existing rows backfilled to parity defaults, and future application code must use those defaults plus one warning when values are NULL. `buildings.building_code NOT NULL` remains item 1.6.
+**Phase 1 item 1.3. Decision: APPROVED with amendments A1–A7; E2 and E3 implemented, 2026-11-20.** The approved rules are: expectation scopes follow contract §9 (`ASSET_METRIC`, `ASSET_TYPE_METRIC`, `SOURCE`, `GLOBAL`); freshness is always-on with no work-hours gating; a gap starts at `last_observed_at` on `MISSING` and closes on a newer observation; gap splitting is deferred; freshness creates no alerts/incidents; only non-working weekdays are stored; building schedule fields remain nullable with existing buildings backfilled to parity defaults. A7 says `NOT_APPLICABLE` is computed but not persisted: no resolved series row means not applicable, for E4 to derive on read. `buildings.building_code NOT NULL` remains item 1.6.
 
 ## 1. Verified current state
 
@@ -17,7 +17,7 @@ The Core computes freshness; connectors do not send `freshness` or `communicatio
 
 ## 2. Proposed model and additive migration
 
-**Expectations.** Migration 009 creates `reporting_expectations` with exactly the contract §9 scopes: `ASSET_METRIC`, `ASSET_TYPE_METRIC`, `SOURCE`, `GLOBAL`. Scope keys are nullable and constrained so exactly the keys for that scope are present. It includes `record_kind` and metric/event type keys so heartbeat expectations can be represented, plus `expected_interval_seconds`, stale/missing multipliers, priority, validity bounds, expectation version, and audit timestamps. Resolve in contract order: asset+metric → asset-type+metric → source → global; priority selects among applicable overrides, with equal-priority ambiguity prohibited. There is no generic per-asset scope.
+**Expectations.** Migration 009 creates `reporting_expectations` with exactly the contract §9 scopes: `ASSET_METRIC`, `ASSET_TYPE_METRIC`, `SOURCE`, `GLOBAL`. Scope keys are nullable and constrained so exactly the keys for that scope are present. It includes `record_kind` and metric/event type keys so heartbeat expectations can be represented, plus `expected_interval_seconds`, stale/missing multipliers, priority, validity bounds, expectation version, and audit timestamps. Resolve in contract order: asset+metric → asset-type+metric → source → global; within one scope the larger numeric priority wins, then the most recent `valid_from`; equal-priority ambiguity for the same keys is prohibited. Validity uses `valid_from <= now < valid_to`. There is no generic per-asset scope.
 
 **Defaults:** global telemetry `E=900s`, heartbeat `E=3600s`, source keepalive `300s`, stale multiplier `2`, and missing multiplier `5`, matching contract §9. Migration 009 inserts these defaults. Store the source keepalive as a `GLOBAL` expectation with `record_kind=source`; allow `SOURCE` overrides for keepalive or reporting intervals. An unconfigured telemetry/heartbeat series uses the relevant global interval. Event-only assets without an expected heartbeat are `NOT_APPLICABLE`, consistent with §9. All freshness expectations are always on and use UTC elapsed age; building work hours do not pause or gate freshness. Work hours are used later for alert logic (ISS-008) only.
 
@@ -31,15 +31,37 @@ The Core computes freshness; connectors do not send `freshness` or `communicatio
 
 ## 3. Freshness evaluation job
 
-**Inputs.** Evaluate accepted `telemetry_records` by `observed_at` for point freshness; use `event_records` only for explicitly configured heartbeat/event expectations; read `equipment_state_records` as explicit reported evidence without letting it overwrite derived health. Use `data_sources.last_received_at` for source liveness, `last_success_at`/error fields as diagnostics, and `ingestion_batches.delivery_mode` plus `connector_status` as connector context. Do not treat a `BACKFILL` batch's receipt time as a fresh observation. Rejections are audit evidence, not operational measurements.
+**Inputs.** The broader design uses accepted `telemetry_records` by `observed_at` for point freshness and `event_records` for configured heartbeat/event expectations. E3 implements those series only; it does not evaluate source liveness, `equipment_state_records`, connector diagnostics, or rejections. `data_sources.last_received_at` and `ingestion_batches.delivery_mode` remain inputs for later source-level work. A `BACKFILL` receipt time is not a fresh observation.
 
-**Schedule and rules.** Proposal: one idempotent pass every 60 seconds, using current UTC wall time (not the latest stored fact time used by the existing pipeline), with a persisted evaluation watermark and per-source work queue. For each due series, select its latest accepted observation and apply the exact §9 thresholds. `UNKNOWN` remains distinct from `MISSING`. Freshness is always evaluated; work hours and non-working weekdays do not pause or gate it. A heartbeat expectation is evaluated as a reporting series. Source liveness uses `last_received_at` against the keepalive threshold independently of point freshness.
+**E3 implementation.** `app/services/freshness.py` provides the evaluator and database pass; `scripts/freshness_job.py` runs one pass or repeats it at a configurable interval (default 60 seconds). Each pass uses a UTC clock and re-evaluates every resolved series in deterministic keyset pages. Pages commit independently; a failed page rolls back while earlier pages remain committed. A restart begins at the first page, and idempotent writes make a repeated pass safe. No timestamp is reset at startup. E3 evaluates telemetry and explicitly expected event/heartbeat series; source-level liveness/correlation is not part of this series job. `UNKNOWN` remains distinct from `MISSING`. Freshness is always evaluated; work hours and non-working weekdays do not pause or gate it.
 
-On each pass, upsert the current series row and open/close gaps using a deterministic series/start identity. Reprocessing the same watermark and current observations must produce no duplicate rows. Open a gap when freshness first reaches `MISSING`, using `last_observed_at` as `gap_start`; close it at the first new observation. Backfill splitting is not implemented. This item generates no alerts and no incidents. The job does not synthesize `OFFLINE`, `UNAVAILABLE`, or an equipment fault from silence. It reports source `STALE`/`LOST` liveness separately. Those values must not be mapped to asset availability; Core-derived equipment health/state changes are item 1.4.
+On each pass, upsert the current series row and open/close gaps using the unique series/start identity. Repeating the same pass with the same clock and inputs changes no stored values and creates no duplicate rows. A gap opens when freshness reaches `MISSING`, with `gap_start=last_observed_at`; it closes only when `MAX(observed_at)` is newer than the open gap start. An older late/backfilled observation does not close it. Gap splitting/repair is not implemented. `NOT_APPLICABLE` is returned by the pure evaluator but not written; candidates without an active expectation have no current row and no new gap. This job generates no alerts or incidents and does not change asset state, KPIs, dashboard, chat, or APIs. Silence never synthesizes `OFFLINE`, `UNAVAILABLE`, or an equipment fault.
 
-**Cost and failure behavior.** Process changed sources/series incrementally rather than scanning all history each minute; process records in bounded pages (including 5,000-record batches) and persist a cursor only after the page's writes commit. Existing candidate indexes include `telemetry_records(ts)`, `event_records(asset_id, ts)`, and migration-006 `(source_id, received_at)` indexes; use `EXPLAIN (ANALYZE, BUFFERS)` on representative disposable data before proposing any index. At ≥1M rows, the 1.5 performance check must measure lag, rows/pages read, lock time, and query plans; this note makes no runtime-cost claim. If a page fails, roll it back, retain the last committed cursor, log a bounded error, and retry with backoff. If the job is delayed or stopped, freshness is marked with its actual `evaluated_at`; do not advance source timestamps or pretend evaluation succeeded.
+**Cost and failure behavior.** E3 keyset-pages the resolved series universe and queries the latest accepted observation per series using `MAX(ts)`; it does not persist a cursor or claim incremental full-history cost. Telemetry reads `v_telemetry_valid`: `BAD` is excluded, while legacy `NULL` and `UNCERTAIN` quality remain included as that view specifies. `received_at` is stored as a diagnostic but never determines age, so a late-arriving `BACKFILL` row cannot make older observations fresher. Existing candidate indexes include `telemetry_records(ts)`, the telemetry natural key, `event_records(asset_id, ts)`, and migration-006 source/received indexes; use `EXPLAIN (ANALYZE, BUFFERS)` on representative disposable data before proposing an index. At ≥1M rows, item 1.5 must measure rows/pages read, lock time, lag, and query plans; no runtime-cost claim is made here. A failed page rolls back; prior committed pages remain. The job emits one bounded error line and exits non-zero; an operator may rerun it. A delayed/stopped job does not advance timestamps or pretend evaluation succeeded.
 
 To avoid misleading restart/outage alarms, do not reset observation timestamps on Core startup and do not open a second gap for an already-open interval. Group simultaneous stale series by source before reporting. A connector outage can legitimately make source liveness stale; once a keepalive or live batch is received, source liveness recovers while old backfill remains stale by `observed_at`. A configured startup grace for notifications (not for calculations) is a human decision; no such grace exists today.
+
+### E3 operator run
+
+Set explicit database connection environment variables for the intended database; `PGHOST` and `PGPORT` are required and the job has no host/port defaults. For example, after loading credentials from the operator's protected environment file:
+
+```sh
+export PGHOST=127.0.0.1
+export PGPORT=25443
+export PGDATABASE=anzma
+# PGUSER and PGPASSWORD come from the protected deployment environment.
+python3 scripts/freshness_job.py --once
+```
+
+For repeated local evaluation, run `python3 scripts/freshness_job.py --loop --interval 60`. The JSON line reports evaluated series, their state counts, gaps opened/closed, page commits, and duration. No Compose service or scheduler is installed by E3; production scheduling/wiring is a later decision. Read the current persisted values directly for now:
+
+```sql
+SELECT freshness, count(*) FROM series_freshness_current GROUP BY freshness ORDER BY freshness;
+SELECT asset_id, source_id, record_kind, metric_code, event_type, gap_start, last_evaluated_at
+FROM data_gaps WHERE gap_end IS NULL ORDER BY gap_start;
+```
+
+`NOT_APPLICABLE` is not stored under amendment A7: an event-only asset without an expected heartbeat has no current row, and E4 will derive that state on read. E3 exposes no HTTP endpoint.
 
 ## 4. Source-level liveness and grouped reporting
 
@@ -82,7 +104,7 @@ Keep existing dashboard/KPI/alert response fields and meanings unchanged. A late
 |---|---|
 | Defaults | Keep contract defaults: telemetry 900s, heartbeat 3600s, source keepalive 300s, stale 2×, missing 5×. |
 | Expectation granularity | Use exactly contract §9 scopes: asset+metric, asset-type+metric, source, and global. |
-| Job schedule | Every 60 seconds, bounded incremental pages, persisted watermark. |
+| Job schedule | Every 60 seconds, re-evaluate all resolved series in bounded pages. E3 keeps the keyset cursor in memory and restarts at the first page; revisit persistence only if operations/performance require it. |
 | Source grouping threshold | Start with ≥3 expected series and ≥60% stale; calibrate against demo and site data. |
 | Existing-building timezone/schedule | Backfill `Etc/GMT-2`, 08:00–18:00, no non-working weekdays. Keep fields nullable and make application NULL fallback log once; item 1.6 decides NOT NULL. |
 | Gap lifecycle | Open on `MISSING` from `last_observed_at`; close on first new observation; no backfill split/repair in this item. |
@@ -101,12 +123,14 @@ Keep existing dashboard/KPI/alert response fields and meanings unchanged. A late
 - **A4:** Freshness produces no alerts or incidents.
 - **A5:** Store non-working weekdays only; defer holiday dates.
 - **A6:** Building timezone/schedule columns stay nullable and existing buildings are backfilled. Future app behavior uses `Etc/GMT-2`, 08:00–18:00, no non-working days for NULL and logs one warning. `building_code NOT NULL` is item 1.6.
+- **A7:** Do not persist `NOT_APPLICABLE`; absence of a resolved series row means not applicable, to be derived by E4 on read. Do not alter the E2 schema.
 
 ## 10. Limitations to carry into the Phase 1 list
 
-- No freshness evaluator, expectation configuration, persisted gap history, or current-freshness read model exists today.
+- E3's evaluator/job is available through the CLI only; Compose scheduling, E4 read APIs, and source-level liveness/correlation remain unimplemented.
+- `NOT_APPLICABLE` has no persisted row; E4 must derive it from absence. Gap splitting/repair after backfill is not implemented.
+- No ≥1M-row performance result is claimed; query plans and measured indexes are required before adding indexes.
 - `data_sources` timestamps describe batch receipt/success/error, not per-asset reporting cadence; `connector_status` is opaque JSON diagnostics.
 - Existing dashboard `no_data` and hourly heartbeat compliance remain separate legacy KPIs until a reviewed parity/consumer change.
 - Fixed UTC+2 ignores DST and per-building differences; seed buildings and customer site timezone/schedule are not configured in the schema.
 - Source-level grouping thresholds, the customer timezone/weekend, holiday handling, and site calibration remain open.
-- No ≥1M-row performance result is claimed; query plans and measured indexes are required before adding indexes.

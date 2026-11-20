@@ -108,7 +108,7 @@ def evaluate_state(
 
 
 _CANDIDATE_SQL = """
-WITH candidate_series AS (
+SELECT source_id,asset_id,record_kind,metric_code,event_type,asset_type FROM (
     SELECT DISTINCT t.source_id,t.asset_id,'telemetry'::text AS record_kind,
            m.name AS metric_code,NULL::text AS event_type,a.asset_type
       FROM v_telemetry_valid t
@@ -148,24 +148,38 @@ WITH candidate_series AS (
            SELECT 1 FROM event_records e JOIN event_types et USING (event_type_id)
            WHERE r.record_kind='event' AND e.asset_id=a.asset_id AND et.name=r.event_type
        )
-)
-SELECT source_id,asset_id,record_kind,metric_code,event_type,asset_type
-FROM candidate_series
+) AS candidate_series
 """
 
 
-def _candidate_page(cur: Any, now: datetime, after: tuple[Any, ...] | None, limit: int) -> list[dict[str, Any]]:
+def _prepare_candidates(cur: Any, now: datetime) -> None:
+    cur.execute("DROP TABLE IF EXISTS pg_temp.freshness_candidates")
+    cur.execute(
+        "CREATE TEMP TABLE freshness_candidates ON COMMIT PRESERVE ROWS AS " + _CANDIDATE_SQL,
+        (now, now, now, now),
+    )
+    cur.execute(
+        """CREATE UNIQUE INDEX freshness_candidates_seek_idx ON pg_temp.freshness_candidates
+               (asset_id,record_kind,(COALESCE(source_id,0)),(COALESCE(metric_code,'')),(COALESCE(event_type,'')))"""
+    )
+
+
+def _candidate_page(cur: Any, after: tuple[Any, ...] | None, limit: int) -> list[dict[str, Any]]:
     if after is None:
-        query = _CANDIDATE_SQL + " ORDER BY asset_id,record_kind,COALESCE(source_id,0),COALESCE(metric_code,''),COALESCE(event_type,'') LIMIT %s"
-        params = (now, now, now, now, limit)
+        query = """SELECT source_id,asset_id,record_kind,metric_code,event_type,asset_type
+                     FROM pg_temp.freshness_candidates
+                    ORDER BY asset_id,record_kind,COALESCE(source_id,0),COALESCE(metric_code,''),COALESCE(event_type,'')
+                    LIMIT %s"""
+        params = (limit,)
     else:
-        query = _CANDIDATE_SQL + """
+        query = """SELECT source_id,asset_id,record_kind,metric_code,event_type,asset_type
+                     FROM pg_temp.freshness_candidates
           WHERE ROW(asset_id,record_kind,COALESCE(source_id,0),COALESCE(metric_code,''),COALESCE(event_type,''))
              > ROW(%s::bigint,%s::text,%s::bigint,%s::text,%s::text)
           ORDER BY asset_id,record_kind,COALESCE(source_id,0),COALESCE(metric_code,''),COALESCE(event_type,'')
           LIMIT %s
         """
-        params = (now, now, now, now, *after, limit)
+        params = (*after, limit)
     cur.execute(query, params)
     return [dict(row) for row in cur.fetchall()]
 
@@ -313,11 +327,19 @@ def run_once(conn: Any, now: datetime, batch_size: int = PAGE_SIZE) -> dict[str,
     totals = {"series_evaluated": 0, "gaps_opened": 0, "gaps_closed": 0, "pages_committed": 0}
     after = None
     page_number = 0
+    try:
+        with conn.cursor() as cur:
+            _prepare_candidates(cur, instant)
+        conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        message = f"freshness candidate snapshot failed: {type(exc).__name__}: {str(exc)}"
+        raise RuntimeError(message[:MAX_ERROR_CHARS]) from exc
     while True:
         page_number += 1
         try:
             with conn.cursor() as cur:
-                candidates = _candidate_page(cur, instant, after, batch_size)
+                candidates = _candidate_page(cur, after, batch_size)
                 if not candidates:
                     conn.commit()
                     break
@@ -349,6 +371,19 @@ def run_once(conn: Any, now: datetime, batch_size: int = PAGE_SIZE) -> dict[str,
             totals["pages_committed"] += 1
         except Exception as exc:
             conn.rollback()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("DROP TABLE IF EXISTS pg_temp.freshness_candidates")
+                conn.commit()
+            except Exception:
+                conn.rollback()
             message = f"freshness page {page_number} failed: {type(exc).__name__}: {str(exc)}"
             raise RuntimeError(message[:MAX_ERROR_CHARS]) from exc
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DROP TABLE IF EXISTS pg_temp.freshness_candidates")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     return {**totals, "states": states, "evaluated_at": instant}
