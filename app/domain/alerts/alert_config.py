@@ -4,9 +4,6 @@ All thresholds, the rule catalogue and the corrective-action playbooks.
 Recommendations come from the playbooks below; each cause and action is only
 offered when the facts measured for the alert satisfy its condition.
 """
-LOCAL_UTC_OFFSET = 2
-WORK_START = 8
-WORK_END = 18
 HISTORY_DAYS = 7
 MAX_EVIDENCE_EVENTS = 10
 
