@@ -884,7 +884,7 @@ def _():
     malformed = TestClient(App.api).post("/api/v1/ingest/batches", json=payload,
                                         headers={"Authorization": f"Bearer {key_shaped}"})
 
-    assert missing.status_code == 401 and missing.json()["error"]["code"] == "AUTH_INVALID"
+    assert missing.status_code == 401 and missing.json()["error"]["code"] == "AUTH_MISSING"
     assert invalid.status_code == 401 and invalid.json()["error"]["code"] == "AUTH_INVALID"
     assert set(missing.json()) == {"error"} and set(missing.json()["error"]) == {"code", "message", "retryable"}
     assert malformed.status_code == 422 and malformed.json()["error"]["code"] == "SCHEMA_INVALID"

@@ -400,6 +400,9 @@ async def ingestion_request_validation_error(request: Request, exc: RequestValid
         return await request_validation_exception_handler(request, exc)
 
     authorization = request.headers.get("authorization")
+    if authorization is None:
+        return _ingestion_error_response(ingestion.IngestionError(
+            401, "AUTH_MISSING", "A source API key is required."))
     token = token_from_authorization(authorization)
     if ingestion.parse_key_prefix(token) is None:
         return _ingestion_error_response(ingestion.IngestionError(
