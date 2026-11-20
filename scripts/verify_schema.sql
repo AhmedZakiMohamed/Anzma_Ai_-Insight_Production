@@ -1,5 +1,5 @@
 -- verify_schema.sql -- READ-ONLY catalog check of a live database against the authoritative schema
--- (base schema -> 003 -> 004 -> 005 -> 006 -> 007 -> 008 -> 009 -> 010; see DATABASE_BASELINE.md). Changes nothing: SELECT only.
+-- (base schema -> 003 -> 004 -> 005 -> 006 -> 007 -> 008 -> 009 -> 010 -> 011; see DATABASE_BASELINE.md). Changes nothing: SELECT only.
 -- Run:  psql -U anzma -d <db> -f verify_schema.sql        (every row must show status = OK)
 -- Exit status of psql is not affected by a failed check; read the status column (final row = overall verdict).
 WITH expected_tables(name) AS (VALUES
@@ -7,7 +7,8 @@ WITH expected_tables(name) AS (VALUES
   ('metric_type_system_compat'),('event_type_system_compat'),('telemetry_records'),('event_records'),
   ('alerts'),('incidents'),('scenario_runs'),('schema_migrations'),('data_sources'),('source_credentials'),
   ('asset_external_ids'),('ingestion_batches'),('ingestion_rejections'),('equipment_state_records'),
-  ('reporting_expectations'),('data_gaps'),('series_freshness_current')),
+  ('reporting_expectations'),('data_gaps'),('series_freshness_current'),('source_liveness_current'),
+  ('source_liveness_transitions'),('data_gap_cause_history')),
 expected_views(name) AS (VALUES
   ('v_data_clock'),('v_asset_overview'),('v_incident_overview'),('v_alert_overview'),('v_camera_status'),
   ('v_telemetry_valid'),('v_asset_current_state'),('v_unmapped_external_assets')),
@@ -20,7 +21,11 @@ expected_indexes(name) AS (VALUES
   ('idx_equipment_state_asset_observed'),('uq_event_legacy_natural_key'),('idx_ingestion_rejections_unmapped'),
   ('reporting_expectations_pkey'),('reporting_expectations_scope_priority_key'),('data_gaps_pkey'),
   ('data_gaps_series_gap_key'),('uq_data_gaps_one_open_per_series'),('idx_data_gaps_building_detected_at'),
-  ('series_freshness_current_pkey'),('series_freshness_current_series_key')),
+  ('series_freshness_current_pkey'),('series_freshness_current_series_key'),
+  ('source_liveness_current_pkey'),('idx_source_liveness_current_state_evaluated'),
+  ('source_liveness_transitions_pkey'),('source_liveness_transitions_source_evaluation_key'),
+  ('idx_source_liveness_transitions_source_time'),('data_gap_cause_history_pkey'),
+  ('idx_data_gap_cause_history_gap_time')),
 expected_columns(tbl, col) AS (VALUES
   ('alerts','incident_id'),('alerts','evidence'),('alerts','resolved_ts'),('alerts','explanation'),
   ('alerts','explanation_source'),('alerts','explained_at'),('incidents','grouping_rule'),
@@ -55,7 +60,22 @@ expected_columns(tbl, col) AS (VALUES
   ('data_sources','source_type'),('data_sources','connector_name'),('data_sources','connector_version'),
   ('data_sources','status'),('data_sources','source_metadata'),('data_sources','created_at'),
   ('data_sources','last_received_at'),('data_sources','last_success_at'),('data_sources','last_error_at'),
-  ('data_sources','last_error'),('data_sources','max_backdate_days'),
+  ('data_sources','last_error'),('data_sources','max_backdate_days'),('data_sources','keepalive_interval_seconds'),
+  ('source_liveness_current','source_id'),('source_liveness_current','state'),
+  ('source_liveness_current','evaluated_at'),('source_liveness_current','last_received_at'),
+  ('source_liveness_current','expected_interval_seconds'),('source_liveness_current','age_seconds'),
+  ('source_liveness_current','reason_code'),('source_liveness_current','reason_message'),
+  ('source_liveness_current','active_series_count'),('source_liveness_current','stale_series_count'),
+  ('source_liveness_current','missing_series_count'),('source_liveness_current','mass_stale'),
+  ('source_liveness_current','last_success_at'),('source_liveness_current','last_error_at'),
+  ('source_liveness_current','last_error'),('source_liveness_current','connector_status'),
+  ('source_liveness_transitions','transition_id'),('source_liveness_transitions','source_id'),
+  ('source_liveness_transitions','evaluated_at'),('source_liveness_transitions','from_state'),
+  ('source_liveness_transitions','to_state'),('source_liveness_transitions','reason_code'),
+  ('source_liveness_transitions','active_series_count'),('source_liveness_transitions','stale_series_count'),
+  ('source_liveness_transitions','missing_series_count'),('source_liveness_transitions','mass_stale'),
+  ('data_gap_cause_history','cause_history_id'),('data_gap_cause_history','gap_id'),
+  ('data_gap_cause_history','old_cause'),('data_gap_cause_history','new_cause'),('data_gap_cause_history','changed_at'),
   ('source_credentials','credential_id'),('source_credentials','source_id'),('source_credentials','key_prefix'),
   ('source_credentials','key_hash'),('source_credentials','scopes'),('source_credentials','created_at'),
   ('source_credentials','expires_at'),('source_credentials','revoked_at'),('source_credentials','last_used_at'),
@@ -122,7 +142,14 @@ expected_constraints(name) AS (VALUES
   ('series_freshness_current_version_check'),('series_freshness_current_series_key'),
   ('series_freshness_current_source_id_fkey'),('series_freshness_current_asset_id_fkey'),
   ('series_freshness_current_metric_code_fkey'),('series_freshness_current_event_type_fkey'),
-  ('series_freshness_current_expectation_id_fkey')),
+  ('series_freshness_current_expectation_id_fkey'),('data_sources_keepalive_interval_check'),
+  ('source_liveness_current_source_id_fkey'),('source_liveness_current_state_check'),
+  ('source_liveness_current_interval_check'),('source_liveness_current_age_check'),
+  ('source_liveness_current_counts_check'),('source_liveness_transitions_source_id_fkey'),
+  ('source_liveness_transitions_from_state_check'),('source_liveness_transitions_to_state_check'),
+  ('source_liveness_transitions_counts_check'),('source_liveness_transitions_source_evaluation_key'),
+  ('data_gap_cause_history_gap_id_fkey'),('data_gap_cause_history_old_check'),
+  ('data_gap_cause_history_new_check'),('data_gap_cause_history_change_check')),
 checks AS (
   SELECT 1 AS n, 'tables missing' AS check_name, '0' AS expected,
          (SELECT count(*) FROM expected_tables e WHERE NOT EXISTS
@@ -182,6 +209,12 @@ checks AS (
   UNION ALL SELECT 18, 'data gap lifecycle trigger function installed', '1',
          (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
           WHERE n.nspname='public' AND p.proname='enforce_data_gap_lifecycle')::text
+  UNION ALL SELECT 19, 'E4b audit and source liveness triggers/functions installed', '2',
+         ((SELECT count(*) FROM pg_trigger t JOIN pg_class r ON r.oid=t.tgrelid
+            JOIN pg_namespace n ON n.oid=r.relnamespace WHERE n.nspname='public'
+              AND r.relname='data_gaps' AND t.tgname='trg_data_gap_cause_history' AND NOT t.tgisinternal)
+          + (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+              WHERE n.nspname='public' AND p.proname='audit_data_gap_cause_change'))::text
 )
 SELECT n, check_name, expected, actual,
        CASE WHEN expected LIKE '>=%' THEN CASE WHEN actual::int >= substr(expected,3)::int THEN 'OK' ELSE 'FAIL' END
