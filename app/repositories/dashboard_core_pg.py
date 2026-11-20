@@ -314,7 +314,7 @@ def _data_extent(conn):
         """
         SELECT MIN(ts) AS first_ts, MAX(ts) AS last_ts
         FROM (
-            SELECT ts FROM telemetry_records
+            SELECT ts FROM v_telemetry_valid
             UNION ALL
             SELECT ts FROM event_records
         ) AS all_ts
@@ -523,7 +523,7 @@ def _asset_status_counts(conn, params):
             SELECT
                 asset_id,
                 COUNT(*) AS telemetry_count
-            FROM telemetry_records
+            FROM v_telemetry_valid
             WHERE ts >= %(start)s
               AND ts < %(end)s
             GROUP BY asset_id
@@ -557,7 +557,7 @@ def _asset_status_counts(conn, params):
                  AND (
                      EXISTS (
                          SELECT 1
-                         FROM telemetry_records AS old_t
+                         FROM v_telemetry_valid AS old_t
                          WHERE old_t.asset_id = s.asset_id
                      )
                      OR EXISTS (
@@ -569,7 +569,7 @@ def _asset_status_counts(conn, params):
                 THEN 'no_data'
                 WHEN COALESCE(e.warning_count, 0) > 0 THEN 'warning'
                 WHEN NOT EXISTS (
-                    SELECT 1 FROM telemetry_records AS ever_t WHERE ever_t.asset_id = s.asset_id
+                    SELECT 1 FROM v_telemetry_valid AS ever_t WHERE ever_t.asset_id = s.asset_id
                     UNION ALL
                     SELECT 1 FROM event_records AS ever_e WHERE ever_e.asset_id = s.asset_id
                 ) THEN 'unknown'
@@ -649,7 +649,7 @@ def _average_metric(conn, params, metric_name):
         , metric_data AS (
             SELECT
                 tr.value
-            FROM telemetry_records AS tr
+            FROM v_telemetry_valid AS tr
             JOIN metric_types AS mt
               ON mt.metric_id = tr.metric_id
             JOIN scope AS s

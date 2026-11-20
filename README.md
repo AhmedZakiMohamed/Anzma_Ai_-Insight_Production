@@ -2,7 +2,7 @@
 
 Anzma AI Insight is a locally hosted smart-building operations demo. It brings telemetry and events from five building systems into one PostgreSQL database, detects operational problems, groups related alerts into incidents, and presents asset health and incident history in a dashboard.
 
-The repository is a **simulated-data demo**, not a production building-management system. It has no authentication, no direct live-device connection, and no equipment control. Recommendations are informational; the platform does not operate building equipment.
+The repository is a **simulated-data demo**, not a production building-management system. Dashboard/operational REST and Socket.IO routes require a deployment bearer secret; ingestion uses separate per-source keys. There is no direct live-device connection or equipment control. Recommendations are informational; the platform does not operate building equipment.
 
 ## What the platform does
 
@@ -119,7 +119,8 @@ The **Alert Center** lists detected alert records that are still open or acknowl
 ### Requirements
 
 - Docker Desktop or Docker Engine with Compose v2.
-- A local `.env` file with a non-empty PostgreSQL password.
+- A local `.env` file with a non-empty PostgreSQL password and a unique API bearer secret.
+- The default host ports 5432 (PostgreSQL), 8000 (API), and 11434 (Ollama) must be available, or changed in `.env` before startup.
 
 ### Start
 
@@ -127,11 +128,25 @@ From the repository root:
 
 ```bash
 cp deploy/examples/.env.example .env
-# Edit .env and set PGPASSWORD to a local password.
+# Set PGPASSWORD, then generate/store the API token without echoing it:
+umask 077
+ANZMA_API_TOKEN="$(openssl rand -hex 32)" python3 -c 'from pathlib import Path; import os; p=Path(".env"); p.write_text(p.read_text().replace("ANZMA_API_TOKEN=", "ANZMA_API_TOKEN=" + os.environ["ANZMA_API_TOKEN"], 1))'
+# Change DB_HOST_PORT, API_HOST_PORT, or OLLAMA_HOST_PORT if needed.
 docker compose --env-file .env -p anzma-insight -f deploy/compose/docker-compose.yml up -d --build
 ```
 
-Open [http://localhost:8000](http://localhost:8000) for the dashboard and [http://localhost:8000/docs](http://localhost:8000/docs) for the API. The explicit `--env-file .env` and `-p anzma-insight` ensure Compose reads the root configuration and targets the same project when you later rebuild a service.
+Open [http://localhost:8000](http://localhost:8000) for the dashboard. Enter the bearer token when prompted; it is exchanged for an eight-hour HttpOnly, SameSite=Strict cookie. API clients send `Authorization: Bearer $ANZMA_API_TOKEN`. `/health` and `/ready` are public for container checks; the static dashboard files are public, while data/control REST routes and Socket.IO require authentication. The explicit `--env-file .env` and `-p anzma-insight` ensure Compose reads the root configuration and targets the same project when you later rebuild a service.
+
+Check service and dependency readiness:
+
+```bash
+docker compose --env-file .env -p anzma-insight -f deploy/compose/docker-compose.yml ps
+docker compose --env-file .env -p anzma-insight -f deploy/compose/docker-compose.yml exec -T db pg_isready -U postgres -d anzma
+curl -i http://localhost:8000/health
+curl -i http://localhost:8000/ready
+```
+
+Expected bodies are `{"status":"ok"}` from `/health` and `{"status":"ready","database":"up"}` from `/ready`. The port variables in `.env` change host ports while container ports remain fixed. PostgreSQL and Ollama bind to `127.0.0.1` by default. Deliberate external access requires setting `DB_BIND_ADDRESS` or `OLLAMA_BIND_ADDRESS` to an appropriate address (for example `0.0.0.0`) and applying network controls; do not expose them to untrusted networks.
 
 To rebuild only the API after changing application or dashboard files:
 
@@ -139,7 +154,7 @@ To rebuild only the API after changing application or dashboard files:
 docker compose --env-file .env -p anzma-insight -f deploy/compose/docker-compose.yml up -d --build api
 ```
 
-The PostgreSQL initialization scripts run only when the database volume is empty. Existing volumes are not reseeded automatically. Avoid `down -v` for routine restarts: it deletes the local PostgreSQL data and downloaded Ollama models. Compose services and initialization mounts are defined in [`deploy/compose/docker-compose.yml`](deploy/compose/docker-compose.yml).
+The PostgreSQL initialization scripts run only when the database volume is empty. Existing volumes are not reseeded automatically; apply migrations 006–009 to an existing database with the documented runner in [`docs/DATA_MIGRATION_PLAN.md`](docs/DATA_MIGRATION_PLAN.md). Migration 009 adds nullable building schedules and freshness expectation/gap/current-state schema; it does not run a freshness job or change application behavior. Avoid `down -v` for routine restarts: it deletes the local PostgreSQL data and downloaded Ollama models. Compose binds PostgreSQL and Ollama to loopback by default. Compose services and initialization mounts are defined in [`deploy/compose/docker-compose.yml`](deploy/compose/docker-compose.yml).
 
 If Ollama or its model is unavailable, database-backed dashboard features continue to work and explanations can use the deterministic fallback. The AI runtime is optional for normal dashboard operation.
 
@@ -150,14 +165,16 @@ If Ollama or its model is unavailable, database-backed dashboard features contin
 | `GET /dashboard/overview` | System status, KPIs, and incident-chart data. Accepts `hours` and `system_type`. |
 | `GET /dashboard/trends` | Event and telemetry time series. Accepts `hours` and `system_type`. |
 | `GET /dashboard/equipment-health` | Per-asset status and last-seen information. |
-| `GET /alerts` | Alert Center records, including status and linked incident ID. |
+| `GET /alerts` | Alert Center records, including status and linked incident ID (bearer-authenticated). |
 | `GET /incidents` | Ranked incidents and their linked alert IDs. |
 | `GET /incidents/{id}` | Incident details and recommended actions. |
 | `POST /incidents/{id}/status` | Acknowledge or resolve an incident and its linked alerts. |
 | `GET /incidents/{id}/evidence` | Re-verified evidence for the incident. |
 | `POST /alerts/{id}/explain` | Evidence-grounded explanation, with optional local model use. |
+| `POST /api/v1/ingest/batches` | Authenticated, versioned batch ingestion for telemetry, events, and equipment state. |
+| `GET /api/v1/ingest/batches/{batch_id}` | Retrieve batch outcomes and full rejected-record audit for the authenticated source. |
 
-For ingestion, validation, and full response shapes, use the running API documentation at `/docs`. The API contract and longer-term design notes are in [`docs/API_CONTRACT.md`](docs/API_CONTRACT.md) and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); those documents include proposed features, so check the implementation links above for current behavior.
+The v1 ingestion contract, response semantics, API-key lifecycle, and provisioning steps are in [`docs/INGESTION_CONTRACT.md`](docs/INGESTION_CONTRACT.md). Existing `POST /events` and `POST /alerts` routes remain supported.
 
 ## Repository map
 
@@ -178,7 +195,7 @@ For ingestion, validation, and full response shapes, use the running API documen
 ## Project status and limitations
 
 - The default dataset is synthetic and is loaded only when PostgreSQL initializes an empty volume.
-- The demo does not authenticate users or directly connect to building devices.
+- The demo uses a shared deployment bearer token for the operational dashboard/API and Socket.IO; ingestion has separate source-scoped keys. It does not directly connect to building devices.
 - Incident resolution is an operator workflow state; linked alert records and covered fault observations are updated, but missing/stale data can still leave the asset in Warning.
 - Recommendations are advisory. The application does not execute actions on HVAC, networking, access, CCTV, or fire-alarm equipment.
 - Historical verification notes in `docs/` describe their recorded runs; they are not evidence that the current workspace or container has just been tested.

@@ -100,12 +100,16 @@ def _utc(ts):
 def load_context(cur, end, history_days=7):
     from datetime import timedelta
     base = end - timedelta(days=history_days)
-    cur.execute("""SELECT a.asset_id, a.name, a.asset_code, s.code AS system, a.location_id, l.name AS zone
+    cur.execute("""SELECT a.asset_id, a.name, a.asset_code, s.code AS system, a.location_id, l.name AS zone,
+                          b.timezone, b.work_start_local, b.work_end_local, b.non_working_weekdays
                    FROM assets a JOIN system_types s USING (system_type_id)
-                   JOIN locations l USING (location_id)""")
+                   JOIN locations l USING (location_id)
+                   JOIN buildings b USING (building_id)""")
     assets = {r["asset_id"]: {"id": r["asset_id"], "name": r["name"], "asset_code": r["asset_code"],
                               "system_type": SYSTEM_TO_API[r["system"]], "location_id": r["location_id"],
-                              "zone": r["zone"]} for r in cur.fetchall()}
+                              "zone": r["zone"], "timezone": r["timezone"],
+                              "work_start_local": r["work_start_local"], "work_end_local": r["work_end_local"],
+                              "non_working_weekdays": r["non_working_weekdays"]} for r in cur.fetchall()}
     ev = {aid: [] for aid in assets}
 
     cur.execute("""SELECT e.event_id, e.asset_id, e.ts, t.name AS type, e.severity, e.details
@@ -126,7 +130,7 @@ def load_context(cur, end, history_days=7):
                                   "details": details})
 
     cur.execute("""SELECT t.telemetry_id, t.asset_id, t.ts, m.name AS metric, t.value
-                   FROM telemetry_records t JOIN metric_types m USING (metric_id)
+                   FROM v_telemetry_valid t JOIN metric_types m USING (metric_id)
                    WHERE t.ts > %s AND t.ts <= %s AND m.name IN ('temperature','bandwidth_util','packet_loss')
                    ORDER BY t.ts, t.telemetry_id""", (base, end))
     loss = {}
@@ -151,7 +155,7 @@ def load_context(cur, end, history_days=7):
 
 
 def latest_ts(cur):
-    cur.execute("""SELECT GREATEST((SELECT max(ts) FROM telemetry_records), (SELECT max(ts) FROM event_records)) AS t""")
+    cur.execute("""SELECT GREATEST((SELECT max(ts) FROM v_telemetry_valid), (SELECT max(ts) FROM event_records)) AS t""")
     return cur.fetchone()["t"]
 
 

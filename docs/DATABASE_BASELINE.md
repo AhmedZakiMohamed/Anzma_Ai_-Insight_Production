@@ -1,10 +1,10 @@
 # DATABASE_BASELINE.md — single source of truth for the Anzma database
 
-Status legend: paths below are checked in the current working tree. Latest verification report: tested commit 441110d (2026-11-17), see [DAY2_TEST_RESULTS.md](DAY2_TEST_RESULTS.md). Related: [DAY2_IMPLEMENTATION_REPORT.md](DAY2_IMPLEMENTATION_REPORT.md).
+Status legend: this document records the **pre-006 deployed baseline** and historical results below. The repository now adds migrations 006–008; their schema and upgrade procedure are documented in [DATA_MIGRATION_PLAN.md](DATA_MIGRATION_PLAN.md). The shared running database remains at its inspected pre-006 version until an operator applies them.
 
 ## 1. Authoritative architecture
 
-PostgreSQL 16 (Docker Compose, `postgres:16`). **13 tables + 5 views.** The authoritative schema is exactly the files below, in this order. There is no migration runner and no `schema_migrations` table (deliberate; needs a deployment decision, §8).
+PostgreSQL 16 (Docker Compose, `postgres:16`). The pre-006 deployed baseline is **13 tables + 5 views**. Migration 006 adds seven tables and two views (20 tables + 7 views); 007 changes event uniqueness without changing counts; 008 adds `v_unmapped_external_assets` (20 tables + 8 views). Existing volumes require the explicit migration runner; Compose init scripts alone do not upgrade them.
 
 | # | File | Adds | State |
 |---|---|---|---|
@@ -12,10 +12,13 @@ PostgreSQL 16 (Docker Compose, `postgres:16`). **13 tables + 5 views.** The auth
 | 2 | `db/migrations/003_incidents.sql` | `incidents`, `alerts.incident_id`, 3 indexes | present; idempotent by design |
 | 3 | `db/migrations/004_chat_views.sql` | 5 views `v_*` | present; idempotent by design |
 | 4 | `db/migrations/005_alert_uniqueness.sql` | UNIQUE index `uq_alerts_rule_asset_first_ts` | present; verified on the fresh isolated test database: index exists and `verify_schema.sql` reports OVERALL OK (tested commit 441110d; see `test_logs/441110d/schema.txt`) |
+| 5 | `db/migrations/006_ingestion_foundation.sql` | source registry/key hashes, mappings, nullable provenance, batch/rejection audit, state facts, two views | implemented; migration and constraints passed in isolated test DB; not applied to shared DB |
+| 6 | `db/migrations/007_event_source_identity.sql` | replaces full legacy event unique constraint with source-aware partial keys | implemented; distinct source IDs and legacy duplicates tested in isolated DB; not applied to shared DB |
+| 7 | `db/migrations/008_ingestion_contract_conformance.sql` | date limit, batch diagnostics, rejection source/external identifiers and view, metric plausibility bounds | implemented; migration idempotence, API behavior, and schema verified in disposable DB; not applied to shared DB |
 
 Not authoritative: `data-model.sql` (22-table draft, not loaded by Compose). `db/init/anzma_schema_and_seed.sql` is the single bootstrap schema-and-seed file; tests use this path directly.
 
-## 2. Tables (13)
+## 2. Pre-006 tables (13)
 
 `buildings`, `locations` (UNIQUE building_id+name), `system_types` (CHECK code in HVAC/NETWORKING/ACCESS_CONTROL/CCTV/FIRE_ALARM), `assets` (asset_code UNIQUE; FK system_type, location), `metric_types` (name UNIQUE, unit), `event_types` (name UNIQUE), `metric_type_system_compat`, `event_type_system_compat` (composite PKs), `telemetry_records` (UNIQUE asset+metric+ts; CHECK value not NaN/±Infinity), `event_records` (UNIQUE asset+event_type+ts; CHECK severity), `alerts`, `incidents` (003), `scenario_runs` (CHECK end_ts ≥ start_ts; array columns without FKs).
 
@@ -23,7 +26,7 @@ Not authoritative: `data-model.sql` (22-table draft, not loaded by Compose). `db
 
 Indexes: idx_assets_location, idx_assets_system_type, idx_telemetry_ts, idx_event_ts, idx_event_asset_ts, idx_alerts_first_ts, idx_alerts_asset_ts, idx_alerts_severity, idx_alerts_open (partial, status<>'resolved'), idx_alerts_incident, idx_incidents_location_last, idx_incidents_status, uq_alerts_rule_asset_first_ts.
 
-## 3. Views (5, from 004; read-only)
+## 3. Pre-006 views (5, from 004; read-only)
 
 `v_data_clock(as_of)`, `v_asset_overview`, `v_incident_overview`, `v_alert_overview`, `v_camera_status`. "Now" in every view is the **latest stored record** (`v_data_clock`), never the server clock. Column lists are asserted in `day2_ahmed/test_data_integrity.py`.
 
@@ -51,9 +54,9 @@ Other limitations: telemetry/event tables have no `received_at`, `source`, `qual
 
 ## 7. Clean install and deployment
 
-1. Compose (`docker compose up`) runs init files only on an **empty** volume, in filename order. The current `docker-compose.yml` mounts the base schema (01), then migrations 003, 004, and 005 (02–04). Clean install verified on tested commit `441110d` in isolated project `anzma-acceptance-441110d` with a fresh volume on 2026-11-17: `verify_schema.sql` OVERALL OK, 13 tables, 5 views, and the five suites pass (see [DAY2_TEST_RESULTS.md](DAY2_TEST_RESULTS.md)).
+1. Compose runs init files only on an **empty** volume. The historical 2026-11-17 verification used migrations through 005 and confirmed the baseline schema (13 tables, 5 views). Current Compose adds 006–008 for new volumes.
 
-2. Existing databases (volume already initialised) are not re-run by Compose: apply any missing migration manually with `psql -f`. **Apply 005 before running the updated `store_alerts` code against an existing DB**: PostgreSQL requires the matching unique index for its `ON CONFLICT` clause. Confirmed: the running database contains 005 (index present).
+2. Existing databases are not upgraded by Compose init mounts. Use `scripts/apply_migrations.py` for unapplied migrations 006+ after backup and operator review. The shared DB was not migrated during implementation.
 
 3. 005 aborts with a clear message if duplicates exist (it never deletes data).
 
@@ -61,7 +64,7 @@ Other limitations: telemetry/event tables have no `received_at`, `source`, `qual
 
 ## 8. Deferred (not implemented)
 
-`source_event_id` event dedup and `received_at`/ingestion metadata (when a connector exists); migration runner + `schema_migrations` (needs Amr's deployment decision); the 12 PROPOSED entities (organizations, asset_external_ids, data_sources, unit_conversions, reporting_expectations, asset_state_current/history, data_gaps, alert_evidence, ingestion_batches/rejections, retention_policies); duplicated `building_id`; relaxing the CHECK on `system_types.code`; data-clock fix (§5); calibration of provisional bandwidth thresholds when per-link capacity data is available.
+Freshness/gap tracking, retention/rollups, organizations, `building_id` duplicated onto facts, `alert_evidence`, unit conversions, relaxing the `system_types.code` CHECK, a data-clock change (§5), and calibration of provisional bandwidth thresholds remain deferred. Ingestion sources, mappings, credentials, provenance, quality, batch/rejection audit, state facts, and the migration runner are implemented by 006 and its companion code.
 
 ## 9. Test status
 

@@ -1,12 +1,12 @@
 # Anzma AI Insight Core — API Contract V1
 
-**Status:** Current API inventory for the reviewed `final` branch
-**Reviewed commit:** `87e084d753bcc478b20898b9b9507a2013955ceb`
-**Important:** This is an implementation inventory, not a claim that the future telemetry interface exists.
+**Status:** Historical API inventory, superseded for ingestion by [`INGESTION_CONTRACT.md`](INGESTION_CONTRACT.md)
+**Reviewed commit:** `87e084d753bcc478b20898b9b9507a2013955ceb` (historical snapshot)
+**Important:** This snapshot predates the versioned batch ingestion route. Use it only for legacy route context; it does not describe current ingestion behavior.
 
 ## 1. Scope and conventions
 
-- Current FastAPI routes are defined in `App.py` and do not consistently use an `/api/v1` prefix.
+- This historical inventory was based on `App.py`; current FastAPI routes are registered in `app/main.py` and the ingestion route uses `/api/v1`.
 - The route details below summarize reviewed code. Capture the running application's OpenAPI schema and route outputs before treating this as a machine-verified contract.
 - Some current responses expose internal identifiers such as `asset_id`. The future connector contract must not require or expose Core database IDs. Changes to operator-facing responses require compatibility review.
 - Production authentication/authorization behavior was not verified.
@@ -67,7 +67,9 @@ The endpoint accepts a message and optional time-window, model, history, and ses
 
 The assistant should explain available evidence. Successful Ollama/Qwen execution through the integrated application remains unverified and is a Sprint 1 acceptance item.
 
-## 6. Future connector ingestion interface — proposed, not implemented
+## 6. Superseded connector ingestion draft
+
+This section is retained as historical planning text. The versioned connector endpoint is now implemented and its authoritative contract is [`INGESTION_CONTRACT.md`](INGESTION_CONTRACT.md); do not use the draft payload/path decisions below.
 
 A versioned interface for normalized IoT observations must define:
 
@@ -79,11 +81,11 @@ A versioned interface for normalized IoT observations must define:
 - Unknown mapping and validation errors.
 - Authentication and customer/site authorization.
 
-Core maps `(source, external_device_id)` to its internal asset. Connectors must not know database IDs or write Core tables. Exact path, payload, batching, response codes, authentication, and retry behavior remain open. Any `/api/v1/...` ingestion path in existing docs is proposed until implemented and verified.
+Core maps `(source, external_device_id)` to its internal asset. Connectors must not know database IDs or write Core tables. The approved path, payload, batching, response codes, authentication, and retry behavior are implemented and documented in `INGESTION_CONTRACT.md`; the draft text above is historical only.
 
 ## 7. Documentation discrepancy
 
-The reviewed `docs/API_CONTRACT.md` describes proposed `/api/v1` routes that were not found in the current API. Update it or clearly label those routes as proposals; keep this implemented-route inventory aligned with runtime OpenAPI output.
+`docs/API_CONTRACT.md` is a separate historical platform draft. Its proposed telemetry/events batch routes are not the approved ingestion interface; use `INGESTION_CONTRACT.md` for that interface.
 
 ## 8. Verification required before release
 
@@ -92,4 +94,4 @@ The reviewed `docs/API_CONTRACT.md` describes proposed `/api/v1` routes that wer
 3. Add synthetic request/response examples.
 4. Decide how operator-facing APIs handle internal database identifiers.
 5. Document authentication, authorization, and versioning.
-6. Keep the connector interface marked unimplemented until implemented and tested.
+6. Keep this historical inventory labeled as superseded for ingestion and maintain the authoritative contract against current code/tests.

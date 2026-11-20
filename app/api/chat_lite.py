@@ -266,7 +266,7 @@ def _metric_latest(cur, metric_name, needle):
         params.extend([f"%{needle}%", f"%{needle}%"])
     sql = f"""
         SELECT a.name AS asset_name, l.name AS location_name, mt.name AS metric_name, t.ts, t.value
-        FROM telemetry_records t
+        FROM v_telemetry_valid t
         JOIN metric_types mt ON mt.metric_id = t.metric_id
         JOIN assets a ON a.asset_id = t.asset_id
         JOIN locations l ON l.location_id = a.location_id
@@ -445,7 +445,7 @@ def _hvac_temp_higher_fallback(cur, body, lang):
     sql = """
         SELECT a.asset_id, a.name AS asset_name, l.name AS zone, st.code AS system,
                m.name AS metric_name, t.ts, t.value
-        FROM telemetry_records t
+        FROM v_telemetry_valid t
         JOIN metric_types m ON m.metric_id = t.metric_id
         JOIN assets a ON a.asset_id = t.asset_id
         JOIN locations l ON l.location_id = a.location_id
@@ -614,6 +614,8 @@ def _safe_sql(sql_text: str) -> str:
     # enum values in the schema are lowercase; the model sometimes writes 'CRITICAL' / 'RESOLVED'
     text = re.sub(r"'(CRITICAL|WARNING|INFO|OPEN|ACKNOWLEDGED|RESOLVED)'",
                   lambda m: "'" + m.group(1).lower() + "'", text)
+    # The model may query the base fact table; route telemetry reads through the quality-aware view.
+    text = re.sub(r"(?i)(\b(?:FROM|JOIN)\s+)telemetry_records\b", r"\1v_telemetry_valid", text)
     if " LIMIT " not in upper:
         text = f"{text.rstrip(';')} LIMIT 200"
     return text
@@ -638,7 +640,7 @@ def get_schema():
         return {
             "tables": [
                 "assets", "locations", "system_types", "metric_types", "event_types",
-                "telemetry_records", "event_records", "alerts", "incidents",
+                "telemetry_records", "v_telemetry_valid", "event_records", "alerts", "incidents",
             ],
             "columns": {
                 "assets": ["asset_id", "name", "asset_code", "system_type_id", "location_id"],

@@ -1,6 +1,6 @@
 # Anzma AI Insight Core — Deployment Standard
 
-**Status:** Proposed deployment standard; current deployment behavior is not fully verified
+**Status:** Local Docker Compose deployment verified on 19 November 2026; customer production deployment remains unverified
 **Scope:** Repeatable Core installation without customer-specific source-code changes
 
 ## 1. Deployment goals
@@ -20,6 +20,7 @@
 Docker Compose
   - Core API and dashboard
   - PostgreSQL with persistent storage
+  - Optional freshness evaluator profile (database-only service)
   - Optional Ollama service or externally managed local Ollama endpoint
 ```
 
@@ -34,7 +35,11 @@ The reviewed application reads `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPA
 | Database | `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` | Password supplied as a secret; host/port are deployment-specific |
 | AI provider | `CHAT_USE_LLM`, `OLLAMA_HOST`, `OLLAMA_MODEL`, `OLLAMA_TIMEOUT` | Model may be disabled; outage must not disable deterministic fallback |
 | Runtime | `DETECT_INTERVAL`, `ALERT_POLL_INTERVAL`, log level | Validate values and bounds at startup |
-| API security | Authentication/authorization settings when selected | Decide before customer deployment; do not assume unauthenticated access is production-ready |
+| API security | `ANZMA_API_TOKEN` bearer secret for REST/Socket.IO; HttpOnly browser session cookie | Shared deployment identity only; deploy behind HTTPS and set `ANZMA_COOKIE_SECURE=true`; per-user identity/RBAC remains open |
+| Ingestion rate limit | `ANZMA_INGEST_RATE_LIMIT_PER_MIN` (60) and `ANZMA_INGEST_RATE_LIMIT_BURST` (10) | Per credential, in-memory per API process; invalid or nonpositive values fall back to defaults with a warning |
+| Cross-origin browser access | `ANZMA_CORS_ALLOWED_ORIGINS` | Empty by default (same-origin only); configure comma-separated exact `http://` or `https://` origins for both REST and Socket.IO. Wildcards and invalid entries are ignored with a warning. |
+| Freshness evaluator | `ANZMA_FRESHNESS_INTERVAL_SECONDS` (60), `ANZMA_FRESHNESS_LOCK_RETRY_SECONDS` (5) | Opt-in Compose profile; one PostgreSQL session advisory lock per database. Invalid or nonpositive values use the defaults with a warning. |
+| Source liveness | `ANZMA_SOURCE_SILENCE_MULTIPLIER` (3), `ANZMA_MASS_STALE_MIN_SERIES` (3), `ANZMA_MASS_STALE_PERCENT` (50) | Passed to the evaluator service and used only for evidence/classification; silence never creates OFFLINE or alerts. |
 
 Defaults differ across reviewed modules, and Compose does not pass every runtime setting consistently. The implementation must establish one settings source, consistent defaults, and explicit validation.
 
@@ -44,6 +49,7 @@ Defaults differ across reviewed modules, and Compose does not pass every runtime
 - Never put credentials in Dockerfiles, source, images, logs, or example commands.
 - Use a protected local environment file for development and the deployment platform's secret mechanism for customer installs.
 - Rotate credentials through deployment configuration, not source edits.
+- **Credential audit log:** `scripts/ingestion_admin.py` emits one JSON line to stderr after each committed key creation, rotation, or revocation. Example: `{"timestamp":"2026-11-19T14:30:00Z","event":"KEY_ROTATED","source_code":"ahu-east","key_prefix":"a1b2c3d4e5f6","credential_id":42,"actor":"operator","outcome":"SUCCESS","host":"api-host"}`. Capture the CLI process stderr with the operator/central log collector; for a local Docker exec, append stderr only to a protected audit file (`2>>/secure/path/credential-audit.jsonl`). Do not capture stdout, because the existing CLI prints the one-time key there. Audit records contain no key or hash.
 - Do not expose PostgreSQL or Ollama ports outside the intended network without an explicit deployment decision.
 
 ## 5. Database initialization and migrations
@@ -62,7 +68,7 @@ The current working tree has one bootstrap schema at `db/init/anzma_schema_and_s
 
 - Validate required configuration at startup; errors must not reveal secret values.
 - Liveness reports whether the process runs. Readiness reports whether dependencies required for advertised behavior are available.
-- Current `/health` returns `{"status":"ok"}`; database readiness behavior was not verified.
+- `/health` returns `{"status":"ok"}` for process liveness; `/ready` returns `{"status":"ready","database":"up"}` only while PostgreSQL answers `SELECT 1`.
 - Compose startup order alone does not prove PostgreSQL readiness. Use a readiness check and bounded retry.
 - If Ollama is optional, report model unavailability separately and preserve deterministic fallback.
 - API process health does not prove sensor data is current or equipment is healthy.
@@ -71,6 +77,8 @@ The current working tree has one bootstrap schema at `db/init/anzma_schema_and_s
 
 - Store PostgreSQL data in a named persistent volume or managed persistent location.
 - Replacing/restarting the application container must not erase operational history.
+- The freshness evaluator is a separate opt-in Compose service. It waits for PostgreSQL, holds a session advisory lock for its lifetime, and restarts after a failed pass. SIGTERM/SIGINT finish the active pass and release the lock. It does not need the API or Ollama service.
+- Start it with `docker compose --profile freshness up -d db freshness`; inspect output with `docker compose --profile freshness logs -f freshness`; stop it with `docker compose --profile freshness stop freshness`. The interval defaults to 60 seconds. Verify `FRESHNESS_PASS` log lines and monitor `evaluated_at`/snapshot age through the operator API; `FRESHNESS_PASS_FAILED` means that pass exited unsuccessfully and Compose will restart the process.
 - Keep application containers stateless unless a documented feature requires local state.
 - Decide whether included Ollama model files use persistent storage.
 - Document and verify backup/restore before commercial release.
@@ -85,20 +93,9 @@ The current working tree has one bootstrap schema at `db/init/anzma_schema_and_s
 - Integrated Ollama/Qwen success remains outstanding until a request through the application succeeds.
 - Measure performance on target deployment hardware; do not infer it from the development laptop.
 
-## 9. Proposed installation sequence
+## 9. Verified local installation sequence
 
-Exact commands must be added after implementation and execution in the target environment.
-
-1. Confirm supported host prerequisites.
-2. Obtain the approved Core artifact and deployment files.
-3. Create protected configuration from the safe example.
-4. Set database, runtime, security, and optional Ollama settings.
-5. Start PostgreSQL and confirm readiness.
-6. Apply migrations and optional seed data for the selected install mode.
-7. Start Core API and dashboard.
-8. Verify liveness and readiness.
-9. Open the dashboard and run documented smoke scenarios.
-10. Record release, migration, configuration profile (without secrets), and actual test results.
+The exact clean-clone run, command output, isolated project, and first batch response are in [`DAY3_DEPLOYMENT_VERIFICATION.md`](DAY3_DEPLOYMENT_VERIFICATION.md). The reproducible sequence is: clone the branch; copy the safe environment example; set a strong PostgreSQL password and unique `ANZMA_API_TOKEN`; choose unused host ports; run Compose; check `ps`, `pg_isready`, `/health`, and `/ready`; authenticate the dashboard; provision a source/key and asset mapping with `scripts/ingestion_admin.py`; then send the v1 request in `INGESTION_CONTRACT.md`. PostgreSQL/Ollama bind to loopback by default. Empty volumes apply migrations 003–008 through init scripts. Existing volumes require backup and application of 006–008 with the runner in `DATA_MIGRATION_PLAN.md`.
 
 ## 10. Troubleshooting guide
 

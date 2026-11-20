@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Status** | Design and interface specification. **No historian is implemented**; Day 1 does not include implementation. |
-| **Baseline** | PostgreSQL 16 (`docker-compose.yml`, `db` service) with the runtime schema in `CORE_DATA_ARCHITECTURE.md` §4. |
+| **Status** | Historian design plus implemented ingestion and freshness schema. Migrations 006–008 add ingestion provenance/state facts; migration 009 adds expectation, gap, and current-freshness storage plus building schedules. The freshness evaluator, derived state, retention, and rollups remain future work. |
+| **Baseline** | PostgreSQL 16; migrations 006–009 are included for fresh volumes and can be applied additively to existing volumes with the documented runner. The shared database was not migrated. |
 | **Related** | `CANONICAL_DATA_MODEL.md` (entities/columns named here), `DATA_MIGRATION_PLAN.md`, `SPRINT_1_TECHNICAL_ISSUES.md` |
 
 Entities marked *(proposed)* are defined in `CANONICAL_DATA_MODEL.md`. SQL below is **illustrative query design**, not a migration; column names that do not exist today are marked *(proposed)*.
@@ -19,7 +19,7 @@ Entities marked *(proposed)* are defined in `CANONICAL_DATA_MODEL.md`. SQL below
 5. Be the single data source the existing intelligence reads through (KPI, alert engine, incident engine, evidence, AI, chat) without changing their behaviour.
 6. Stay on **PostgreSQL**; add nothing that a measured requirement does not justify.
 
-What exists today [Verified]: facts live in `telemetry_records` and `event_records` (append-by-convention, not enforced), with `UNIQUE` natural keys, `TIMESTAMPTZ` everywhere, and a data-relative clock (`v_data_clock`). There is **no ingestion path for telemetry**, no source/quality/received-time, no state history, no gap detection, no retention policy, and no backup configuration in the repository (none found; the DB uses a named Docker volume `pgdata`).
+What exists today [Verified]: `POST /api/v1/ingest/batches` writes telemetry, events, and append-only equipment state with source, observed/received time, quality, and batch provenance. `v_telemetry_valid` excludes `BAD` while retaining legacy `NULL` quality. Rejected records are audited separately. Freshness gap detection, retention jobs, rollups, and a repository backup runbook are not implemented. The existing legacy endpoints remain supported.
 
 ---
 
@@ -32,7 +32,7 @@ What exists today [Verified]: facts live in `telemetry_records` and `event_recor
 | Storage, retention, historical query API, aggregates | **Core – Historian** |
 | State derivation, freshness, gap detection | **Core – state/freshness job** |
 | KPI, alerts, incidents, evidence, AI, dashboards | **Core – operational intelligence** (existing; read through the repository/view layer) |
-| Authentication of connectors | **Core** (**[Open]** — no authentication exists today; `README.md` lists it as a limitation) |
+| Authentication of connectors | **Core** (implemented for ingestion with per-source hashed keys; operational REST/Socket.IO use the separate deployment bearer token; user-specific identity/RBAC remains open) |
 
 The Historian is **not** a separate service or database in Day 1: it is a set of PostgreSQL tables, one ingestion module, one query/repository module and one scheduled job, all inside the existing Core deployment.
 
@@ -44,14 +44,14 @@ The Historian is **not** a separate service or database in Day 1: it is a set of
 
 Step contract (Core side):
 
-1. **Receive** a batch; stamp `received_at` = platform clock; create an `ingestion_batches` row keyed by `(source_id, client_batch_id)` — a replayed batch returns the stored result.
-2. **Validate** each record (order in `CANONICAL_DATA_MODEL.md` §6): schema → source/building → asset resolution → metric/event type → system compatibility → unit → timestamp (UTC `Z`, ≤ `received_at + 5 min`) → finite value → plausible range.
+1. **Receive** a batch; stamp `received_at` = platform clock; create an `ingestion_batches` row keyed by `(source_id, batch_id)` — a replayed batch returns the stored result.
+2. **Validate** each record (order in `INGESTION_CONTRACT.md` §10): schema/scope → asset permission → registered and compatible metric/event → unit → timestamp (UTC `Z`, future tolerance and per-source maximum back-date) → value and plausibility.
 3. **Persist** accepted records in one transaction per batch using `INSERT … ON CONFLICT DO NOTHING`; classify each outcome `accepted | duplicate | rejected`.
 4. **Record** rejections (`reason_code`, payload) in `ingestion_rejections`.
 5. **Update** `data_sources.last_success_at` / `last_error_*`.
-6. **Return** per-record results (open decision Q4: atomic vs per-record; this design assumes per-record).
+6. **Return** per-record results. Accepted facts, batch response, and rejection audit commit in one transaction; `200 PARTIAL` and `422 REJECTED` both state that the batch transaction committed.
 
-Existing path kept during transition: seed SQL and `POST /events` continue to write to the same tables; rows without `source_id` are treated as source `legacy-seed`.
+Existing path kept during transition: seed SQL and `POST /events` continue to write to the same tables; legacy fact rows remain source-less (`source_id IS NULL`) unless explicitly provisioned later.
 
 ---
 
@@ -188,28 +188,30 @@ ORDER BY ts;
 
 ## 9. Missing-data detection
 
-Inputs: `reporting_expectations.expected_interval_s` (E) per asset/metric, `received_at`, `ts`.
+Inputs: `reporting_expectations.expected_interval_seconds` (E) per resolved series, `received_at`, `ts`. Migration 009 creates the expectation and gap tables; no freshness job writes them yet.
 
 | Condition | Detection | Output |
 |---|---|---|
-| **Missing expected measurement** | For an active series, `evaluation_time − last_observed_at > missing_factor × E`; or a consecutive-sample gap `ts − lag(ts) > missing_factor × E` in history | `data_gaps(gap_start, gap_end NULL while open, cause='NOT_RECEIVED')`; `freshness=MISSING` |
-| **Stale telemetry** | `stale_factor × E < age ≤ missing_factor × E` | `freshness=STALE`; no gap yet |
+| **Missing expected measurement** | For an expected series, `age > missing_multiplier × E` | On reaching `MISSING`, open `data_gaps` with `gap_start=last_observed_at`; close at the first new observation |
+| **Stale telemetry** | `stale_multiplier × E < age ≤ missing_multiplier × E` | `freshness=STALE`; no gap yet |
 | **Delayed ingestion** | `received_at − ts` above a per-source threshold | derived `is_late`, per-source latency stats; no state change |
 | **Communication failure** | all liveness series of an asset (or the whole source) beyond `missing_factor × E`, or `data_sources.status` in (`ERROR`,`DISABLED`) | `communication_status=LOST` (or `UNKNOWN` with `SOURCE_ERROR`); **`availability` unchanged** |
 | **Irregular sampling** | spacing coefficient of variation or share of intervals outside `[0.5E, 1.5E]` over a window | reported by the gap query; informational |
-| **Source-declared missing** | connector sends `quality=MISSING` | `data_gaps` cause `SOURCE_DECLARED_MISSING` |
+| **Missing observation** | connector omits the record; v1 rejects `quality=MISSING` | Migration 009 adds storage; the future evaluator writes gaps. Backfill gap splitting is deferred. |
 
-Illustrative gap query (history):
+Illustrative gap query (history only; a production evaluator must resolve the contract's expectation-scope precedence):
 
 ```sql
 WITH s AS (
-  SELECT asset_id, metric_id, ts,
-         lag(ts) OVER (PARTITION BY asset_id, metric_id ORDER BY ts) AS prev_ts
-  FROM telemetry_records WHERE ts >= %(start)s AND ts < %(end)s)
-SELECT s.asset_id, s.metric_id, s.prev_ts AS gap_start, s.ts AS gap_end
-FROM s JOIN reporting_expectations e                                             -- proposed
-  ON e.asset_id = s.asset_id AND e.metric_id = s.metric_id
-WHERE s.ts - s.prev_ts > make_interval(secs => e.expected_interval_s * e.missing_factor);
+  SELECT tr.asset_id, tr.source_id, mt.name AS metric_code, tr.ts,
+         lag(tr.ts) OVER (PARTITION BY tr.source_id,tr.asset_id,tr.metric_id ORDER BY tr.ts) AS prev_ts
+  FROM telemetry_records tr JOIN metric_types mt USING (metric_id)
+  WHERE tr.ts >= %(start)s AND tr.ts < %(end)s)
+SELECT s.asset_id, s.metric_code, s.prev_ts AS gap_start, s.ts AS gap_end
+FROM s JOIN reporting_expectations e
+  ON e.scope='ASSET_METRIC' AND e.asset_id=s.asset_id AND e.record_kind='telemetry'
+ AND e.metric_code=s.metric_code AND e.valid_from <= s.ts AND (e.valid_to IS NULL OR e.valid_to > s.ts)
+WHERE s.ts - s.prev_ts > make_interval(secs => e.expected_interval_seconds * e.missing_multiplier);
 ```
 
 Compatibility note: today’s `no_data` health status (KPI) and `heartbeat_compliance` (hourly assumption) remain computed as they are; the new detection adds information, it does not rewrite those KPIs. The seed’s Camera 2 outages (silent 45–44 h ago and the last 5 h) are the natural regression scenario: they must still produce `no_data` in the KPI and now additionally `freshness=MISSING` with `availability` driven only by the `camera_offline` events.
@@ -245,7 +247,7 @@ Compatibility note: today’s `no_data` health status (KPI) and `heartbeat_compl
 | Dead-letter handling | `ingestion_rejections` (reason + payload) is the minimal dead-letter store, with a replay tool that re-submits fixed records | A broker DLQ — **not justified** at this scale |
 | Back-pressure | HTTP 429/503 with `Retry-After` when the DB is unavailable (`db_adapter.DatabaseUnavailable` already maps to 503) | Queue |
 
-Design requirement: ingestion must never block the intelligence loop; the detection loop (`App.py _alert_loop`) must tolerate ingestion load (separate connections; statement timeouts as in `chat_lite._run_readonly_sql`).
+Design requirement: ingestion must never block the intelligence loop; the detection loop (`app/main.py::_alert_loop`) must tolerate ingestion load (separate connections; statement timeouts as in `app/api/chat_lite.py`).
 
 ---
 
@@ -253,7 +255,7 @@ Design requirement: ingestion must never block the intelligence loop; the detect
 
 | Record | Idempotency key | Behaviour |
 |---|---|---|
-| Batch | `(source_id, client_batch_id)` (`ingestion_batches`) | Replay returns the original result; no side effects |
+| Batch | `(source_id, batch_id)` (`ingestion_batches`) | Replay returns the original result; no side effects |
 | Telemetry | `(asset_id, metric_id, ts)` (existing UNIQUE) | same value → `duplicate`; different value → `CONFLICT` rejection, first write kept (**[Open]**: allow sanctioned corrections?) |
 | Event | `(source_id, source_event_id)` (new partial UNIQUE) else legacy `(asset_id, event_type_id, ts)` | `duplicate` |
 | State report | `(asset_id, observed_at, source_id)` | `duplicate` |
@@ -303,9 +305,9 @@ Phases are sequencing only — **no dates or owners are assigned**.
 | Phase | Scope | Exit criteria |
 |---|---|---|
 | H0 — Baseline | Golden-output capture of KPI/alerts/incidents/evidence on a copy of the database; backup/restore rehearsal | Baseline stored; restore verified |
-| H1 — Foundation schema | Additive columns/tables (`building_id`, provenance, `data_sources`, `ingestion_*`, `reporting_expectations`); backfill; compatibility views; migration runner | Existing tests + parity checks green; no behaviour change |
-| H2 — Ingestion service | Canonical contract endpoint (telemetry/event/state), validation, idempotency, rejections, `ingestion_batches`; feature flag | Contract tests; replay/retry tests; legacy `POST /events` unchanged |
-| H3 — State & freshness | `asset_state_current/history`, freshness job, `data_gaps`, `series_freshness` | Camera-2 scenario verified; KPI output identical |
+| H1 — Foundation schema | Additive columns/tables (`building_id`, provenance, `data_sources`, `ingestion_*`, `reporting_expectations`, `data_gaps`, `series_freshness_current`); building schedule parity backfill; compatibility views; migration runner | Existing tests + parity checks green; no behavior change |
+| H2 — Ingestion service | Implemented by migrations 006–008 and `/api/v1/ingest/batches`; legacy `POST /events` remains | Conformance vectors and regression evidence are in `INGESTION_CONTRACT.md` and `PRODUCTIZATION_IMPLEMENTATION_REPORT.md` |
+| H3 — State & freshness | Future `asset_state_current/history` and evaluator using the migration-009 gap/current tables | Camera-2 scenario verified; KPI output identical; no freshness alerts/incidents |
 | H4 — Historical query layer | `HistorianRepository` + building-aware views; endpoints reuse it; parity with `frontend_api.trends` | Parity tests |
 | H5 — Evidence & alert hardening | `alert_evidence` dual-write; unique alert index; advisory lock | Evidence verification unchanged (`test_day2_integration.py`) |
 | H6 — Retention & operations | `retention_policies` (disabled by default), integrity-check job, backup schedule | Runbook reviewed |

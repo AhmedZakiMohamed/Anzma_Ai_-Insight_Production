@@ -215,7 +215,7 @@ def create_router(open_ro=core.open_readonly):
                 def series(metric, system_code):
                     rows = conn.execute(f"""
                         SELECT {idx} AS b, avg(x.value) AS avg_v, max(x.value) AS max_v
-                        FROM telemetry_records x JOIN metric_types m USING (metric_id)
+                        FROM v_telemetry_valid x JOIN metric_types m USING (metric_id)
                         JOIN assets a USING (asset_id) JOIN system_types st USING (system_type_id)
                         WHERE x.ts >= %(start)s AND x.ts < %(end)s AND m.name = %(metric)s AND st.code = %(sc)s
                         GROUP BY 1""", dict(p, metric=metric, sc=system_code)).fetchall()
@@ -324,12 +324,12 @@ def create_router(open_ro=core.open_readonly):
                                count(*) FILTER (WHERE et.name = 'heartbeat') AS heartbeats
                         FROM event_records x JOIN event_types et USING (event_type_id)
                         WHERE x.ts >= %(start)s AND x.ts < %(end)s GROUP BY x.asset_id),
-                    tel AS (SELECT asset_id, count(*) AS n FROM telemetry_records
+                    tel AS (SELECT asset_id, count(*) AS n FROM v_telemetry_valid
                             WHERE ts >= %(start)s AND ts < %(end)s GROUP BY asset_id),
-                    ever AS (SELECT asset_id FROM telemetry_records GROUP BY asset_id
+                    ever AS (SELECT asset_id FROM v_telemetry_valid GROUP BY asset_id
                              UNION SELECT asset_id FROM event_records GROUP BY asset_id),
                     seen AS (SELECT asset_id, max(ts) AS last_seen FROM (
-                                 SELECT asset_id, ts FROM telemetry_records WHERE ts < %(end)s
+                                 SELECT asset_id, ts FROM v_telemetry_valid WHERE ts < %(end)s
                                  UNION ALL SELECT asset_id, ts FROM event_records WHERE ts < %(end)s) u
                              GROUP BY asset_id)
                     SELECT s.*, COALESCE(e.events,0) AS events, COALESCE(e.faults,0) AS faults,

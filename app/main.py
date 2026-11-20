@@ -1,6 +1,9 @@
 import os
+import re
+import json
 from typing import Any
 from datetime import datetime, timedelta, timezone
+from uuid import UUID
 
 
 import asyncio
@@ -10,11 +13,13 @@ import psycopg2
 import psycopg2.extras
 import socketio
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from psycopg import OperationalError
 
 from app.repositories.dashboard_core_pg import (
@@ -33,13 +38,38 @@ from app.domain.alerts import alert_config as cfg
 from app.domain.evidence import evidence as evd
 from app.domain.incidents import incident_engine as inc
 from app.services import pipeline
+from app.services import ingestion
+from app.services import rate_limit
+from app.security import (authenticator, configure_cors, cors_origins_from_env, socket_authenticate,
+                          socketio_cors_origins, token_from_authorization)
 
 
 # Every route below is registered on `api`; `asgi_app` (bottom of the file) wraps it with Socket.IO for live alerts.
 api = FastAPI(title="Anzma Dashboard API")
+CORS_ALLOWED_ORIGINS = cors_origins_from_env()
+configure_cors(api, CORS_ALLOWED_ORIGINS)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "dashboard", "static")
 logger = logging.getLogger("anzma")
+
+
+@api.middleware("http")
+async def authenticate_user_api(request: Request, call_next):
+    """Protect every operational REST route; keep liveness, UI assets and ingestion auth separate."""
+    path = request.url.path
+    public = path in {"/", "/dashboard", "/health", "/ready", "/auth/session", "/auth/logout",
+                      "/docs", "/redoc", "/openapi.json"} or path.startswith("/static/")
+    is_ingestion = path.startswith("/api/v1/ingest/")
+    if not public and not is_ingestion:
+        authorization = request.headers.get("authorization")
+        token = token_from_authorization(authorization) or request.cookies.get("anzma_session")
+        if not authorization and not token:
+            return JSONResponse(status_code=401, content={"detail": {"code": "AUTH_MISSING",
+                "message": "Bearer credentials are required."}}, headers={"WWW-Authenticate": "Bearer"})
+        if not authenticator.authenticate(token):
+            return JSONResponse(status_code=401, content={"detail": {"code": "AUTH_INVALID",
+                "message": "Bearer credentials are invalid."}}, headers={"WWW-Authenticate": "Bearer"})
+    return await call_next(request)
 
 # a lost / unreachable database from either driver, or from the Day 2 adapter, is a 503, never a crash
 DB_ERRORS = (OperationalError, psycopg2.OperationalError, da.DatabaseUnavailable)
@@ -47,8 +77,8 @@ DB_ERRORS = (OperationalError, psycopg2.OperationalError, da.DatabaseUnavailable
 api.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
-@api.get("/", include_in_schema=False)
-@api.get("/dashboard", include_in_schema=False)
+@api.get("/", include_in_schema=False, dependencies=[])
+@api.get("/dashboard", include_in_schema=False, dependencies=[])
 def dashboard():
     return FileResponse(os.path.join(STATIC_DIR, "dashboard.html"))
 
@@ -66,13 +96,13 @@ def day2_connect(**options):
     )
 
 
-@api.get("/health")
+@api.get("/health", dependencies=[])
 def health():
     """Liveness only: the process is up. It does not look at the database."""
     return {"status": "ok"}
 
 
-@api.get("/ready")
+@api.get("/ready", dependencies=[])
 def ready():
     """Readiness: 200 only while the database answers a query, otherwise 503 (no connection details in the reply)."""
     try:
@@ -87,6 +117,30 @@ def ready():
         logger.warning("readiness check failed: %s", str(exc).strip()[:200])
         return JSONResponse(status_code=503, content={"status": "not_ready", "database": "down"})
     return {"status": "ready", "database": "up"}
+
+
+@api.post("/auth/session", dependencies=[])
+def create_user_session(request: Request, authorization: str | None = Header(default=None)):
+    """Exchange an operator-provided bearer secret for a short-lived HttpOnly browser cookie."""
+    if not authorization:
+        return JSONResponse(status_code=401, content={"detail": {"code": "AUTH_MISSING",
+            "message": "Bearer credentials are required."}}, headers={"WWW-Authenticate": "Bearer"})
+    token = token_from_authorization(authorization)
+    if not authenticator.authenticate(token):
+        return JSONResponse(status_code=401, content={"detail": {"code": "AUTH_INVALID",
+            "message": "Bearer credentials are invalid."}}, headers={"WWW-Authenticate": "Bearer"})
+    response = JSONResponse({"status": "authenticated"})
+    response.set_cookie("anzma_session", token, max_age=8 * 60 * 60, httponly=True,
+                        secure=os.getenv("ANZMA_COOKIE_SECURE", "false").lower() == "true",
+                        samesite="strict", path="/")
+    return response
+
+
+@api.post("/auth/logout", dependencies=[])
+def delete_user_session():
+    response = JSONResponse({"status": "logged_out"})
+    response.delete_cookie("anzma_session", path="/", httponly=True, samesite="strict")
+    return response
 
 
 @api.get("/dashboard/filters")
@@ -270,12 +324,195 @@ def ask(request: AskRequest) -> dict[str, Any]:
 # ======================================================================================================
 # Dashboard page, assistant widget, detection and live alerts
 # ======================================================================================================
-from app.api import chat_lite, frontend_api  # noqa: E402
+from app.api import chat_lite, frontend_api, freshness_api  # noqa: E402
 
 api.include_router(frontend_api.create_router())
+api.include_router(freshness_api.create_router())
 api.include_router(chat_lite.create_router(
     day2_connect, pipeline, inc, use_llm_default=os.getenv("CHAT_USE_LLM", "true").lower() == "true",
     db_errors=DB_ERRORS))
+
+
+class IngestionConnector(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    name: str = Field(min_length=1, max_length=64)
+    version: str = Field(min_length=1, max_length=32)
+
+
+class IngestionSource(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    source_code: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+    connector: IngestionConnector
+    connector_status: dict[str, Any] | None = None
+
+
+class IngestionBatch(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    contract_version: str
+    batch_id: str
+    sent_at: str
+    source: IngestionSource
+    building_code: str
+    records: list[Any]
+    delivery_mode: str = "LIVE"
+
+    @field_validator("contract_version")
+    @classmethod
+    def _contract_version(cls, value):
+        if not re.fullmatch(r"\d+\.\d+", value):
+            raise ValueError("contract_version must use MAJOR.MINOR format")
+        return value
+
+    @field_validator("batch_id")
+    @classmethod
+    def _batch_id(cls, value):
+        try:
+            return str(UUID(value))
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise ValueError("batch_id must be a UUID") from exc
+
+    @field_validator("sent_at")
+    @classmethod
+    def _sent_at_format(cls, value):
+        if not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,6})?Z", value):
+            raise ValueError("sent_at must be RFC 3339 UTC with a trailing Z")
+        return value
+
+    @field_validator("records")
+    @classmethod
+    def _record_count(cls, value):
+        return value
+
+
+def _ingestion_schema_ready(cur):
+    cur.execute("""SELECT to_regclass('public.data_sources') AS sources,
+                          to_regclass('public.v_unmapped_external_assets') AS unmapped""")
+    row = cur.fetchone()
+    return row["sources"] is not None and row["unmapped"] is not None
+
+
+def _ingestion_error_response(exc: ingestion.IngestionError, headers: dict[str, str] | None = None):
+    return JSONResponse(status_code=exc.status, content=exc.response(exc.batch_id), headers=headers)
+
+
+@api.exception_handler(RequestValidationError)
+async def ingestion_request_validation_error(request: Request, exc: RequestValidationError):
+    if not request.url.path.startswith("/api/v1/ingest/"):
+        return await request_validation_exception_handler(request, exc)
+
+    authorization = request.headers.get("authorization")
+    if authorization is None:
+        return _ingestion_error_response(ingestion.IngestionError(
+            401, "AUTH_MISSING", "A source API key is required."))
+    token = token_from_authorization(authorization)
+    if ingestion.parse_key_prefix(token) is None:
+        return _ingestion_error_response(ingestion.IngestionError(
+            401, "AUTH_INVALID", "A valid source API key is required."))
+
+    errors = exc.errors()
+    location = next((error.get("loc", ()) for error in errors if error.get("loc")), ())
+    field_path = ".".join(str(part) for part in location
+                           if part not in {"body", "query", "path", "header", "cookie"}) or "request"
+    return _ingestion_error_response(ingestion.IngestionError(
+        422, "SCHEMA_INVALID", f"Request validation failed at field '{field_path}'."))
+
+
+@api.post("/api/v1/ingest/batches", tags=["Ingestion"], dependencies=[])
+def ingest_batch(body: IngestionBatch, request: Request,
+                 authorization: str | None = Header(default=None)):
+    """Ingest a canonical batch. Existing POST /events and POST /alerts remain unchanged."""
+    batch_id = body.batch_id
+    try:
+        content_length = int(request.headers.get("content-length", "0") or 0)
+    except ValueError:
+        return JSONResponse(status_code=400, content={"error": {"code": "INVALID_CONTENT_LENGTH",
+                                                                   "message": "Content-Length must be an integer.",
+                                                                   "retryable": False}})
+    if content_length > 5 * 1024 * 1024:
+        return JSONResponse(status_code=413, content=ingestion.IngestionError(
+            413, "BATCH_TOO_LARGE", "Request body exceeds 5 MiB.", batch_id=batch_id).response())
+    body_size = len(json.dumps(body.model_dump(mode="json"), ensure_ascii=False,
+                               separators=(",", ":")).encode("utf-8"))
+    if body_size > 5 * 1024 * 1024:
+        return JSONResponse(status_code=413, content=ingestion.IngestionError(
+            413, "BATCH_TOO_LARGE", "Request body exceeds 5 MiB.", batch_id=batch_id).response())
+    try:
+        conn = day2_connect()
+        try:
+            with conn.cursor() as cur:
+                if not _ingestion_schema_ready(cur):
+                    raise ingestion.IngestionError(503, "INGESTION_SCHEMA_NOT_APPLIED",
+                                                   "Apply database migrations 006–008 before using Core ingestion.",
+                                                   retryable=False, batch_id=batch_id)
+                source = ingestion.authenticate(cur, authorization)
+                conn.commit()  # preserve successful credential use independently of later request admission
+                key_prefix = ingestion.parse_key_prefix((authorization or "")[7:].strip())
+                retry_after = rate_limit.ingestion_rate_limiter.retry_after(key_prefix or "")
+                if retry_after is not None:
+                    limited = ingestion.IngestionError(
+                        429, "RATE_LIMITED", "Ingestion rate limit exceeded; retry after the indicated delay.",
+                        retryable=True)
+                    return _ingestion_error_response(limited, headers={"Retry-After": str(retry_after)})
+                try:
+                    result, replay = ingestion.process_batch(
+                        cur, source, body.model_dump(mode="json"), datetime.now(timezone.utc))
+                except ingestion.IngestionError:
+                    conn.commit()  # retain last_used_at for a valid credential; no fact rows are written on envelope errors
+                    raise
+                conn.commit()
+                headers = {"Idempotent-Replay": "true"} if replay else {}
+                status = 422 if result["status"] == "REJECTED" else 200
+                return JSONResponse(status_code=status, content=jsonable_encoder(result), headers=headers)
+        except ingestion.IngestionError as exc:
+            return _ingestion_error_response(exc)
+        finally:
+            conn.close()
+    except DB_ERRORS as exc:
+        logger.warning("ingestion database unavailable: %s", str(exc).strip()[:200])
+        return JSONResponse(status_code=503, content=ingestion.IngestionError(
+            503, "SERVICE_UNAVAILABLE", "Database is unavailable; retry the same batch_id.",
+            retryable=True, batch_id=batch_id).response())
+
+
+@api.get("/api/v1/ingest/batches/{batch_id}", tags=["Ingestion"], dependencies=[])
+def get_ingestion_batch(batch_id: str, authorization: str | None = Header(default=None)):
+    """Return the recorded per-record outcomes and complete rejection payloads for this source's batch."""
+    try:
+        try:
+                batch_uuid = str(UUID(batch_id))
+        except (ValueError, TypeError, AttributeError):
+            raise ingestion.IngestionError(422, "SCHEMA_INVALID", "batch_id must be a UUID.", batch_id=batch_id)
+        with day2_connect() as conn:
+            with conn.cursor() as cur:
+                if not _ingestion_schema_ready(cur):
+                    raise ingestion.IngestionError(503, "INGESTION_SCHEMA_NOT_APPLIED",
+                                                   "Apply database migrations 006–008 before using Core ingestion.",
+                                                   retryable=False, batch_id=batch_id)
+                source = ingestion.authenticate(cur, authorization)
+                cur.execute("""SELECT response_payload FROM ingestion_batches
+                               WHERE source_id=%s AND batch_id=%s""", (source["source_id"], batch_uuid))
+                row = cur.fetchone()
+                if not row:
+                    raise ingestion.IngestionError(404, "BATCH_NOT_FOUND", "Batch was not found for this source.",
+                                                   batch_id=str(batch_uuid))
+                result = dict(row["response_payload"])
+                cur.execute("""SELECT record_index,record_type,reason_code,message,payload,external_id
+                               FROM ingestion_rejections WHERE ingestion_batch_id=
+                               (SELECT ingestion_batch_id FROM ingestion_batches WHERE source_id=%s AND batch_id=%s)
+                               ORDER BY record_index""", (source["source_id"], batch_uuid))
+                result["rejected"] = [{"index": item["record_index"], "record_type": item["record_type"],
+                                        "reason_code": item["reason_code"], "message": item["message"],
+                                        "payload": item["payload"], "external_id": item["external_id"]}
+                                       for item in cur.fetchall()]
+                result["rejected_truncated"] = False
+                conn.commit()
+                return result
+    except ingestion.IngestionError as exc:
+        return _ingestion_error_response(exc)
+    except DB_ERRORS as exc:
+        logger.warning("ingestion batch lookup unavailable: %s", str(exc).strip()[:200])
+        return JSONResponse(status_code=503, content=ingestion.IngestionError(
+            503, "SERVICE_UNAVAILABLE", "Database is unavailable.", retryable=True, batch_id=batch_id).response())
 
 
 @api.post("/alerts/run", tags=["Alerts"])
@@ -410,9 +647,14 @@ def create_event(body: EventCreate):
                     raise HTTPException(422, f"Unknown event_type '{name}'.")
                 if not row["allowed"]:
                     raise HTTPException(422, f"event_type '{name}' is not allowed for this asset's system.")
-                cur.execute("""INSERT INTO event_records (asset_id, event_type_id, ts, severity, details)
+                cur.execute("SELECT to_regclass('public.uq_event_legacy_natural_key') IS NOT NULL AS partial_key")
+                has_partial_key = cur.fetchone()["partial_key"]
+                conflict_target = ("ON CONFLICT (asset_id, event_type_id, ts) WHERE source_event_id IS NULL DO NOTHING"
+                                   if has_partial_key else
+                                   "ON CONFLICT (asset_id, event_type_id, ts) DO NOTHING")
+                cur.execute(f"""INSERT INTO event_records (asset_id, event_type_id, ts, severity, details)
                                VALUES (%s,%s,%s,%s,%s)
-                               ON CONFLICT (asset_id, event_type_id, ts) DO NOTHING
+                               {conflict_target}
                                RETURNING event_id""",
                             (body.asset_id, row["event_type_id"], body.ts, body.severity.lower(),
                              da.Json(cur, body.details) if body.details is not None else None))
@@ -426,7 +668,17 @@ def create_event(body: EventCreate):
         raise
     except DB_ERRORS as exc:
         raise HTTPException(503, str(exc))
-sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
+sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins=socketio_cors_origins(CORS_ALLOWED_ORIGINS))
+
+
+@sio.event
+async def connect(sid, environ, auth=None):
+    """Socket.IO shares the user API bearer token, separately from ingestion keys."""
+    if not socket_authenticate(auth, environ.get("HTTP_COOKIE")):
+        return False
+    return True
+
+
 DETECT_INTERVAL = int(os.getenv("DETECT_INTERVAL", "60"))        # seconds between automatic detection runs
 POLL_INTERVAL = int(os.getenv("ALERT_POLL_INTERVAL", "3"))       # seconds between checks for new alerts
 _background = []
@@ -469,6 +721,8 @@ async def _alert_loop():
 
 
 async def _startup():
+    if len(os.getenv("ANZMA_API_TOKEN", "")) < 32:
+        raise RuntimeError("ANZMA_API_TOKEN must contain at least 32 characters.")
     _background.append(asyncio.create_task(_alert_loop()))
 
 

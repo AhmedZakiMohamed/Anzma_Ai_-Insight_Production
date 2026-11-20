@@ -7,6 +7,7 @@ facts that triggered it, so it can be traced back to the database.
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from statistics import mean, median
+from zoneinfo import ZoneInfo
 
 try:                                   # legacy store_alerts() only; the unified schema goes through db_adapter
     from psycopg2.extras import Json, execute_values
@@ -14,6 +15,7 @@ except ImportError:                    # psycopg (v3) only installations
     Json = execute_values = None
 
 from app.domain.alerts import alert_config as cfg
+from app.config.freshness_defaults import BUILDING_TIMEZONE, NON_WORKING_WEEKDAYS, WORK_END_LOCAL, WORK_START_LOCAL
 
 T = cfg.T
 TEMP_TYPES = ("TEMPERATURE_READING", "HIGH_TEMPERATURE")
@@ -31,12 +33,25 @@ def minutes(a, b):
     return (b - a).total_seconds() / 60.0
 
 
-def local_hour(ts):
-    return (ts + timedelta(hours=cfg.LOCAL_UTC_OFFSET)).hour
+def _schedule(asset):
+    asset = asset or {}
+    return (asset.get("timezone") or BUILDING_TIMEZONE,
+            asset.get("work_start_local") or WORK_START_LOCAL,
+            asset.get("work_end_local") or WORK_END_LOCAL,
+            asset.get("non_working_weekdays") if asset.get("non_working_weekdays") is not None
+            else NON_WORKING_WEEKDAYS)
 
 
-def is_occupied(ts):
-    return cfg.WORK_START <= local_hour(ts) < cfg.WORK_END
+def local_hour(ts, asset=None):
+    timezone_name, _, _, _ = _schedule(asset)
+    return ts.astimezone(ZoneInfo(timezone_name)).hour
+
+
+def is_occupied(ts, asset=None):
+    timezone_name, work_start, work_end, non_working = _schedule(asset)
+    local = ts.astimezone(ZoneInfo(timezone_name))
+    return (local.isoweekday() not in non_working
+            and work_start <= local.timetz().replace(tzinfo=None) < work_end)
 
 
 def load_context(cur, end):
@@ -285,7 +300,7 @@ def rule_access(ctx):
         for e in of(ctx, a["id"], "DOOR_FORCED"):
             out.append(make_alert("ACC_DOOR_FORCED", "CRITICAL", a, [e],
                                   f"{a['name']} ({a['zone']}): door reported as forced open.",
-                                  {"zone": a["zone"], "after_hours": not is_occupied(e["ts"])}, e["ts"]))
+                                  {"zone": a["zone"], "after_hours": not is_occupied(e["ts"], a)}, e["ts"]))
         for e in of(ctx, a["id"], "DOOR_HELD_OPEN", need_value=True):
             if e["value"] > T["door_held_open_s"]:
                 out.append(make_alert("ACC_DOOR_HELD_OPEN", "WARNING", a, [e],
@@ -306,7 +321,7 @@ def rule_access(ctx):
                      "distinct_cards": len(cards),
                      "unknown_card_share": round(reasons.get("UNKNOWN_CARD", 0) / len(grp), 2),
                      "permission_share": round(reasons.get("NO_PERMISSION", 0) / len(grp), 2),
-                     "grants_during": len(gi), "after_hours": not is_occupied(grp[0]["ts"]),
+                     "grants_during": len(gi), "after_hours": not is_occupied(grp[0]["ts"], a),
                      "duration_min": round(minutes(grp[0]["ts"], grp[-1]["ts"]), 1)}
             sev = "CRITICAL" if wmax >= T["denial_crit"] else "WARNING"
             summary = (f"{a['name']} ({a['zone']}): {len(grp)} denied attempts over {facts['duration_min']:.0f} min "
@@ -335,7 +350,7 @@ def rule_cctv(ctx):
             if dur >= 5:
                 acc = [e for ass in of_system(ctx, "ACCESS") if ass["location_id"] == a["location_id"]
                        for e in of(ctx, ass["id"], "ACCESS_GRANTED", "ACCESS_DENIED", "DOOR_FORCED", "DOOR_HELD_OPEN")
-                       if off["ts"] <= e["ts"] <= end_t and not is_occupied(e["ts"])]
+                       if off["ts"] <= e["ts"] <= end_t and not is_occupied(e["ts"], ass)]
                 if acc:
                     acc.sort(key=lambda e: e["ts"])
                     cards = sorted({e["details"].get("card_id") for e in acc if e["details"].get("card_id")})
@@ -401,11 +416,11 @@ def rule_anomaly(ctx, system, types, rule, min_dev, unit):
         reads = of(ctx, a["id"], *types, need_value=True)
         groups = {True: [], False: []}
         for e in reads:
-            groups[is_occupied(e["ts"])].append(e["value"])
+            groups[is_occupied(e["ts"], a)].append(e["value"])
         stats = {reg: robust_stats(v) for reg, v in groups.items() if len(v) >= T["anomaly_min_baseline"]}
         zs = {}
         for e in reads:
-            st = stats.get(is_occupied(e["ts"]))
+            st = stats.get(is_occupied(e["ts"], a))
             if st:
                 m, mad = st
                 zs[e["id"]] = (0.6745 * (e["value"] - m) / max(mad, 1e-6), e["value"] - m, m, mad)
@@ -421,7 +436,7 @@ def rule_anomaly(ctx, system, types, rule, min_dev, unit):
                          "baseline_median": round(m, 2), "baseline_mad": round(mad, 3),
                          "peak_robust_z": round(z, 1), "readings": len(run),
                          "duration_min": round(minutes(run[0]["ts"], run[-1]["ts"]), 1),
-                         "regime": "working hours" if is_occupied(peak["ts"]) else "off hours",
+                         "regime": "working hours" if is_occupied(peak["ts"], a) else "off hours",
                          "zone": a["zone"]}
                 if system == "HVAC":
                     facts["fan_off"] = any(e["details"].get("fan_on") is False for e in run)

@@ -1,6 +1,7 @@
 > **DRAFT / NOT AUTHORITATIVE.** This describes the *proposed* 22-table unified schema (`data-model.sql`, a Day 1 draft that no
-> install loads and no code reads). The schema the application actually runs is the 13 tables + 5 views defined by
-> `db/init/anzma_schema_and_seed.sql` -> `db/migrations/003`, `004`, `005`; see [DATABASE_BASELINE.md](DATABASE_BASELINE.md).
+> install loads and no code reads). The historical deployed schema was 13 tables + 5 views through migration 005;
+> repository migrations 006–008 add the ingestion foundation and source-aware event identity. See [DATABASE_BASELINE.md](DATABASE_BASELINE.md) and
+> [CANONICAL_DATA_MODEL.md](CANONICAL_DATA_MODEL.md) for current status.
 > The `migrations/001_unified_schema.sql` named below does not exist in this repository.
 
 # Data Model: Anzma AI Insight

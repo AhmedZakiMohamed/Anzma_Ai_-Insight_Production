@@ -1,0 +1,19 @@
+# Data gap and source-liveness semantics — E4a/E4b approved addendum
+
+**Status: APPROVED by the human, 2026-11-20.** These decisions govern E4a and supersede the earlier E4a prompt where it conflicts with E1.
+
+1. **Opening:** Open a gap only when freshness reaches `MISSING`; `STALE` is a freshness state and never opens a gap. `gap_start` is the `observed_at` timestamp of the last valid observation. `detected_at` records when the evaluator detected the gap.
+2. **Work schedule and eligibility:** Evaluation is not gated by work hours. `opened_in_work_hours` records whether `detected_at`, converted using the building's configured IANA timezone, falls within its configured work hours and working weekdays. It is informational only. Do not open a gap for a retired/disabled asset or a disabled source.
+3. **Cause:** E4a writes `UNKNOWN` when it opens a gap. `NO_DATA` means a series is silent while its source is alive; `SOURCE_SUSPECTED` means the source is silent or many of its series are stale together. E4b classifies `NO_DATA` and `SOURCE_SUSPECTED`. Cause may be updated, with `cause_updated_at`, while a gap is open; it is immutable after closure. Cause is evidence only and never changes asset health or produces `OFFLINE`.
+4. **Late data and boundaries:** A back-dated record inside an open or closed gap neither closes nor splits that gap. Boundaries are immutable. A gap closes only on a valid observation newer than the last valid observation recorded at opening; `BAD` quality data never closes a gap. A closed gap stays closed.
+
+## E4b source liveness and cause classification
+
+**Status: APPROVED by the human, 2026-11-20.** E4b implements the following evidence-only rules without adding read APIs or changing dashboard responses.
+
+1. **Liveness states:** `ALIVE`, `SILENT`, `UNKNOWN`, `DISABLED`. `last_received_at` is the evidence and advances for any received batch, including one whose records are all rejected. Disabled source status yields `DISABLED`; no received batch or no usable keepalive expectation yields `UNKNOWN`; otherwise the source is `SILENT` only when `now - last_received_at > expected_interval × multiplier` and is `ALIVE` at or below the threshold. Default interval is 300 seconds from the global source expectation, with nullable `data_sources.keepalive_interval_seconds` override. `ANZMA_SOURCE_SILENCE_MULTIPLIER` defaults to 3; invalid/non-positive values fail closed to 3 with one warning.
+2. **Separate evidence:** `last_success_at`, `last_error_at`, `last_error`, and the latest batch `connector_status` are stored/exposed as evidence fields. They do not affect the liveness state. Liveness does not change asset health, produce `OFFLINE`/`UNAVAILABLE`, or create alerts/incidents.
+3. **Mass-stale rule:** For each source and evaluation, count current expected series for active assets. A source is mass-stale only with at least 3 active series and at least 50% of them `MISSING` or `STALE`. Defaults are configurable with `ANZMA_MASS_STALE_MIN_SERIES` and `ANZMA_MASS_STALE_PERCENT`; invalid values fail closed to 3 and 50 with a warning. Retired/disabled assets are excluded.
+4. **Open-gap classification:** `SILENT` → `SOURCE_SUSPECTED`; `ALIVE` and mass-stale → `SOURCE_SUSPECTED`; `ALIVE` and not mass-stale → `NO_DATA`; `UNKNOWN` or `DISABLED` → leave the cause `UNKNOWN`. Closed gaps are never reclassified. Every cause change while open updates `cause_updated_at` and is recorded in `data_gap_cause_history`. `source_liveness_current` stores the latest source snapshot; `source_liveness_transitions` records state transitions. The evaluator completes series freshness before source aggregation and classifies gaps from that pass's source snapshot. The calculation is evidence only.
+
+The existing E3 evaluator is implemented against the contract's UTC freshness thresholds and `v_telemetry_valid`; this addendum adds no work-hour freshness gating. `NOT_APPLICABLE` remains unpersisted under amendment A7.

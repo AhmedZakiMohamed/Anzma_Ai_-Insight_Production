@@ -1,11 +1,11 @@
 """
-test_data_integrity.py - proves the DATABASE itself rejects bad data (FK, CHECK, UNIQUE, NOT NULL), that the five views
-exist with their columns, that migration 005 makes duplicate alerts impossible (also under concurrency), and pins the
+test_data_integrity.py - proves the DATABASE itself rejects bad data (FK, CHECK, UNIQUE, NOT NULL), that the views
+exist with their columns, that migrations 005/006 constraints hold, and pins the
 CURRENT behaviour of the *_compat tables (not enforced by the database).
 
 Builds a throw-away database (anzma_integrity_test) with the official sequence:
-  db/init/anzma_schema_and_seed.sql -> 003_incidents.sql -> 004_chat_views.sql -> 005_alert_uniqueness.sql
-(003/004/005 are applied twice to prove idempotency). Never touches any other database.
+  db/init/anzma_schema_and_seed.sql -> 003_incidents.sql -> 004_chat_views.sql -> 005_alert_uniqueness.sql -> 006_ingestion_foundation.sql -> 007_event_source_identity.sql -> 008_ingestion_contract_conformance.sql -> 009_freshness_expectations.sql -> 010_data_gap_lifecycle.sql -> 011_source_liveness.sql
+(migrations are applied twice to prove idempotency). Never touches any other database.
 
 Run:  python test_data_integrity.py      (needs a reachable PostgreSQL; PGHOST/PGPORT/PGUSER/PGPASSWORD as in the other tests)
 """
@@ -26,7 +26,13 @@ TEST_DB = "anzma_integrity_test"
 SEQUENCE = [os.path.join(REPO, "db", "init", "anzma_schema_and_seed.sql"),
             os.path.join(ROOT, "db", "migrations", "003_incidents.sql"),
             os.path.join(ROOT, "db", "migrations", "004_chat_views.sql"),
-            os.path.join(ROOT, "db", "migrations", "005_alert_uniqueness.sql")]
+            os.path.join(ROOT, "db", "migrations", "005_alert_uniqueness.sql"),
+            os.path.join(ROOT, "db", "migrations", "006_ingestion_foundation.sql"),
+            os.path.join(ROOT, "db", "migrations", "007_event_source_identity.sql"),
+            os.path.join(ROOT, "db", "migrations", "008_ingestion_contract_conformance.sql"),
+            os.path.join(ROOT, "db", "migrations", "009_freshness_expectations.sql"),
+            os.path.join(ROOT, "db", "migrations", "010_data_gap_lifecycle.sql"),
+            os.path.join(ROOT, "db", "migrations", "011_source_liveness.sql")]
 CHECK, FK, UNIQUE, NOTNULL = "23514", "23503", "23505", "23502"
 T0 = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
 
@@ -39,6 +45,11 @@ VIEW_COLUMNS = {
     "v_alert_overview": {"alert_id", "rule_id", "detection_method", "severity", "status", "is_active", "title", "summary",
                          "first_ts", "last_ts", "incident_id", "asset_name", "asset_type", "system", "zone"},
     "v_camera_status": {"asset_id", "asset_name", "zone", "last_offline", "last_online", "is_offline"},
+    "v_telemetry_valid": {"telemetry_id", "asset_id", "metric_id", "ts", "value", "source_id", "received_at",
+                          "quality", "ingestion_batch_id", "contract_version", "source_metadata"},
+    "v_asset_current_state": {"state_id", "source_id", "asset_id", "observed_at", "received_at", "reported_state",
+                              "availability", "reason_code", "message"},
+    "v_unmapped_external_assets": {"source_id", "source", "external_id", "count", "first_seen", "last_seen"},
 }
 
 
@@ -113,20 +124,75 @@ def alert_params(rule="R1", method="threshold", sev="warning", asset=None, first
     return (rule, method, sev, asset or ASSET, first, last or first, first, status, resolved)
 
 
-@test("clean install: sequence applied, 13 tables and 5 views exist")
+@test("clean install: sequence applied, 26 tables including E4b liveness and 8 views exist")
 def _():
     n = one("SELECT count(*) AS n FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'")["n"]
-    assert n == 13, n
+    assert n == 26, n
+    for table in ("reporting_expectations", "data_gaps", "series_freshness_current"):
+        assert one("SELECT count(*) AS n FROM information_schema.tables WHERE table_schema='public' AND table_name=%s", (table,))["n"] == 1
     v = one("SELECT count(*) AS n FROM information_schema.views WHERE table_schema='public'")["n"]
-    assert v == 5, v
+    assert v == 8, v
 
 
-@test("views: each of the five exists, is queryable and has exactly the documented columns")
+@test("views: all eight exist, are queryable and have exactly the documented columns")
 def _():
     for view, cols in VIEW_COLUMNS.items():
         CUR.execute(f"SELECT * FROM {view} LIMIT 0")
         got = {d[0] for d in CUR.description}
         assert got == cols, (view, got ^ cols)
+
+
+@test("006 is additive: existing facts remain and new provenance fields stay NULL")
+def _():
+    assert one("SELECT count(*) AS n FROM telemetry_records")["n"] > 0
+    assert one("SELECT count(*) AS n FROM telemetry_records WHERE source_id IS NOT NULL OR quality IS NOT NULL")["n"] == 0
+
+
+@test("008 is additive: per-source, batch, rejection and plausibility fields preserve legacy facts")
+def _():
+    assert one("SELECT count(*) AS n FROM telemetry_records WHERE source_id IS NOT NULL OR quality IS NOT NULL")["n"] == 0
+    assert one("SELECT count(*) AS n FROM metric_types WHERE min_plausible IS NOT NULL OR max_plausible IS NOT NULL")["n"] == 0
+    assert one("SELECT count(*) AS n FROM information_schema.columns WHERE table_name='ingestion_rejections' AND column_name IN ('source_id','external_id')")["n"] == 2
+    assert one("SELECT count(*) AS n FROM information_schema.columns WHERE table_name='ingestion_batches' AND column_name IN ('delivery_mode','connector_status')")["n"] == 2
+    metric_id = first_id("metric_types", "metric_id")
+    expect_rejected("UPDATE metric_types SET min_plausible=10,max_plausible=5 WHERE metric_id=%s", (metric_id,), CHECK)
+
+
+@test("006 credentials and source-scoped mapping constraints reject invalid rows")
+def _():
+    building_id = first_id("buildings", "building_id")
+    CUR.execute("UPDATE buildings SET building_code='INTEGRITY-TEST' WHERE building_id=%s", (building_id,))
+    CUR.execute("""INSERT INTO data_sources(source_code,building_id,connector_name,connector_version)
+                    VALUES ('integrity-source',%s,'test','1') RETURNING source_id""", (building_id,))
+    source_id = CUR.fetchone()["source_id"]
+    expect_rejected("INSERT INTO source_credentials(source_id,key_prefix,key_hash) VALUES (%s,'plaintext','not-a-hash')",
+                    (source_id,), CHECK)
+    CUR.execute("SELECT a.asset_id FROM assets a JOIN locations l USING(location_id) WHERE l.building_id=%s LIMIT 1",
+                (building_id,))
+    asset_id = CUR.fetchone()["asset_id"]
+    CUR.execute("""SELECT a.asset_id FROM assets a JOIN locations l USING(location_id)
+                   WHERE l.building_id<>%s LIMIT 1""", (building_id,))
+    other_building_asset = CUR.fetchone()["asset_id"]
+    CUR.execute("INSERT INTO asset_external_ids(source_id,external_id,asset_id) VALUES (%s,'ext-1',%s)",
+                (source_id, asset_id))
+    expect_rejected("INSERT INTO asset_external_ids(source_id,external_id,asset_id) VALUES (%s,'ext-1',%s)",
+                    (source_id, asset_id), UNIQUE)
+    expect_rejected("INSERT INTO asset_external_ids(source_id,external_id,asset_id) VALUES (%s,'cross-building',%s)",
+                    (source_id, other_building_asset), FK)
+    CONN.rollback()
+
+
+@test("006 valid telemetry view excludes BAD quality and retains legacy NULL quality")
+def _():
+    t = T0 + timedelta(days=900)
+    CUR.execute("INSERT INTO telemetry_records(asset_id,metric_id,ts,value,quality) VALUES (%s,%s,%s,1,'BAD')",
+                (ASSET, METRIC, t))
+    assert one("SELECT count(*) AS n FROM v_telemetry_valid WHERE asset_id=%s AND ts=%s", (ASSET, t))["n"] == 0
+    CUR.execute("INSERT INTO telemetry_records(asset_id,metric_id,ts,value) VALUES (%s,%s,%s,1)",
+                (ASSET, METRIC, t + timedelta(seconds=1)))
+    assert one("SELECT count(*) AS n FROM v_telemetry_valid WHERE asset_id=%s AND ts=%s",
+               (ASSET, t + timedelta(seconds=1)))["n"] == 1
+    CONN.rollback()
 
 
 @test("check: telemetry NaN / Infinity / -Infinity are rejected")
@@ -209,6 +275,25 @@ def _():
     expect_rejected("INSERT INTO telemetry_records (asset_id, metric_id, ts, value) VALUES (%s,%s,%s,2)", (ASSET, METRIC, t), UNIQUE)
     CUR.execute("INSERT INTO event_records (asset_id, event_type_id, ts, severity) VALUES (%s,%s,%s,'info')", (ASSET, ETYPE, t))
     expect_rejected("INSERT INTO event_records (asset_id, event_type_id, ts, severity) VALUES (%s,%s,%s,'info')", (ASSET, ETYPE, t), UNIQUE)
+    CONN.rollback()
+
+
+@test("007 event identity: source IDs may differ at one instant; legacy rows keep their natural key")
+def _():
+    building_id = first_id("buildings", "building_id")
+    CUR.execute("UPDATE buildings SET building_code='EVENT-IDENTITY-TEST' WHERE building_id=%s", (building_id,))
+    CUR.execute("""INSERT INTO data_sources(source_code,building_id,connector_name,connector_version)
+                    VALUES ('event-identity-test',%s,'test','1') RETURNING source_id""", (building_id,))
+    source_id = CUR.fetchone()["source_id"]
+    t = T0 + timedelta(days=950)
+    CUR.execute("""INSERT INTO event_records(asset_id,event_type_id,ts,severity,source_id,source_event_id)
+                    VALUES (%s,%s,%s,'info',%s,'event-a'),(%s,%s,%s,'info',%s,'event-b')""",
+                (ASSET, ETYPE, t, source_id, ASSET, ETYPE, t, source_id))
+    assert one("SELECT count(*) AS n FROM event_records WHERE source_id=%s AND ts=%s", (source_id, t))["n"] == 2
+    CUR.execute("""INSERT INTO event_records(asset_id,event_type_id,ts,severity)
+                    VALUES (%s,%s,%s,'info')""", (ASSET, ETYPE, t))
+    expect_rejected("""INSERT INTO event_records(asset_id,event_type_id,ts,severity)
+                       VALUES (%s,%s,%s,'info')""", (ASSET, ETYPE, t), UNIQUE)
     CONN.rollback()
 
 

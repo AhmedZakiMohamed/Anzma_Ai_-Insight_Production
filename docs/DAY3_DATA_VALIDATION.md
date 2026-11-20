@@ -216,6 +216,46 @@ docker compose --env-file .env -p anzma-d3-verify \
 
 The `--llm` S1 command requires the configured Ollama endpoint and Qwen model. The command without `--llm` verifies the deterministic fallback separately.
 
+## 11. Ingestion data-path addendum — 19 November 2026
+
+**This addendum supplements the historical 18 November validation above. Sections 1–10, their counts, and their commit-specific conclusions are retained unchanged.** The current ingestion evidence is from code commit `a9de778cf0793a530ae6e347480f07820c17ab7d` and disposable PostgreSQL 16 databases only; the shared/live database was not migrated.
+
+### Legacy quality and provenance
+
+The restored H0 database held 4,669 telemetry rows before migrations. After migrations 006–008, counts were unchanged, all 4,669 legacy rows still had `quality IS NULL`, and all 4,669 remained visible through `v_telemetry_valid`. All 955 legacy events remained source-less. This preserves historical facts and provenance uncertainty. Operational readers exclude `BAD`; legacy NULL quality is treated as usable/GOOD, but no GOOD value was written back to those rows.
+
+### Accepted, duplicate, conflicting, and rejected records
+
+The authenticated batch route was exercised against the migrated disposable H0 database and a clean Compose install:
+
+- **Accepted:** a valid telemetry record returned HTTP `200`, `status: ACCEPTED`, `transaction: COMMITTED`, and one accepted record ID. A clean-install record stored value `22.5 C`; the H0 immutability case stored `20.0` with `quality=GOOD`.
+- **Exact retry:** replaying the same body with the same `batch_id` returned the stored JSON result and `Idempotent-Replay: true`.
+- **Exact fact duplicate:** the same natural key and content in a new batch returned `DUPLICATE`; it did not add a second measurement.
+- **Conflicting fact:** the same `(asset_id, metric_id, ts)` with a different value returned HTTP `422`, `reason_code=CONFLICT`, and message “A different value is already stored for this asset, metric, and observed_at; first write was preserved.” The original stored value remained `20.0` and `quality=GOOD`.
+- **Partial batch:** one valid and one unit-mismatched record returned HTTP `200`, `status=PARTIAL`, `transaction=COMMITTED`, counts `received=2`, `accepted=1`, `rejected=1`. The rejected record was kept in `ingestion_rejections` and was not inserted as a telemetry fact.
+- **Unmapped asset:** vector 10 returned `ASSET_UNRESOLVED`, retained `source_id`, `external_id`, and payload in rejection audit, and appeared in `v_unmapped_external_assets`.
+- **Plausibility warning:** configured minimum/maximum bounds returned accepted records with `OUT_OF_PLAUSIBLE_RANGE` warnings and stored quality `BAD`; those rows were excluded from `v_telemetry_valid`.
+- **All rejected:** the 101-rejection case returned HTTP `422`, capped the inline response at 100 and marked `rejected_truncated=true`; authenticated GET returned all 101 audit rows with their payloads.
+
+Rejections are audit/control-plane evidence. They are not accepted telemetry/event/state facts and do not become operational truth. These behaviors are covered by the separately named §13.3 vector tests and the Step 0.4 integration check in [`DAY3_FUNCTIONAL_TEST_REPORT.md`](DAY3_FUNCTIONAL_TEST_REPORT.md).
+
+### Scope and limits
+
+The new data-path examples used controlled synthetic/manual requests; no physical device or vendor connector was connected. The H0 data comparison found one last-digit floating-point difference in `avg_zone_temp`; other dashboard fields matched, and alert/incidents responses were byte-identical. No time fields were ignored. Details and exact hashes are in [`DAY3_MIGRATION_REHEARSAL.md`](DAY3_MIGRATION_REHEARSAL.md).
+
+## 12. Phase 0 closure verification — 19 November 2026
+
+This section records a second migration rehearsal and the release-hardening changes in the uncommitted local worktree based on `8cf0bf22a7652254cae95a506a7b067e25a73e8f`. No committed migration file was edited. The full command/output sequence is in [`DAY3_MIGRATION_REHEARSAL.md`](DAY3_MIGRATION_REHEARSAL.md).
+
+- Restored the supplied H0 PostgreSQL 16 custom dump into the new, isolated `anzma-phase0-closure` project. Its original 13 table counts matched after applying 006–008; there was no migration ledger before restore-upgrade and exactly three ledger entries afterward.
+- All 4,669 historic telemetry rows retained `quality`, `source_id`, and `received_at` as NULL and remained visible in `v_telemetry_valid`; all 955 historic events retained NULL source/receive provenance. No history was backfilled.
+- The schema verifier returned `OVERALL | all OK | OK`, including the partial legacy event index and absence of the old full unique constraint.
+- The supplied pre-migration dashboard, alerts, and incidents snapshots had byte-identical SHA-256 hashes to post-migration responses in the rerun; the numeric comparator returned zero differences for each. No fields or time-dependent values were ignored. The earlier final-digit temperature delta was not reproduced; `AVG(DOUBLE PRECISION)` for 291 window samples returned the exact snapshot value. The tolerance tests still show that a `0.01 C` change fails.
+- A fresh Compose project bound the DB and Ollama host ports to `127.0.0.1`. The required API token was set in a mode-0600 temporary environment file and withheld from output. REST checks passed for missing/invalid/valid bearer credentials, cookie session creation/logout, public liveness/readiness, and the protected API route. Socket.IO rejected missing/invalid credentials and accepted a valid cookie or bearer token.
+- A separate one-record batch submitted through `POST /api/v1/ingest/batches` returned HTTP 200, `ACCEPTED`, and `COMMITTED`; the one-time source key was captured only in process memory and not printed.
+
+The browser's visual login interaction was **NOT TESTED** in a human browser. The HTTP session flow and Socket.IO handshake were exercised directly against the isolated local API. Live Ollama verification is reported separately in the functional report and release checklist.
+
 ## 10. Review Status
 
 **Data and API checks in scope:** PASS as recorded above.  
