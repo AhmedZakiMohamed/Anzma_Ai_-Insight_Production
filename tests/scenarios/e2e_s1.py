@@ -50,7 +50,8 @@ def build(db):
                   os.path.join(ROOT, "db", "migrations", "005_alert_uniqueness.sql"),
                   os.path.join(ROOT, "db", "migrations", "006_ingestion_foundation.sql"),
                   os.path.join(ROOT, "db", "migrations", "007_event_source_identity.sql"),
-                  os.path.join(ROOT, "db", "migrations", "008_ingestion_contract_conformance.sql")):   # runtime schema sequence
+                  os.path.join(ROOT, "db", "migrations", "008_ingestion_contract_conformance.sql"),
+                  os.path.join(ROOT, "db", "migrations", "009_freshness_expectations.sql")):   # runtime schema sequence
             c.execute(open(f, encoding="utf-8").read())
             conn.commit()
     return conn

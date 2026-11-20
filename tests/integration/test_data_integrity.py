@@ -4,7 +4,7 @@ exist with their columns, that migrations 005/006 constraints hold, and pins the
 CURRENT behaviour of the *_compat tables (not enforced by the database).
 
 Builds a throw-away database (anzma_integrity_test) with the official sequence:
-  db/init/anzma_schema_and_seed.sql -> 003_incidents.sql -> 004_chat_views.sql -> 005_alert_uniqueness.sql -> 006_ingestion_foundation.sql -> 007_event_source_identity.sql -> 008_ingestion_contract_conformance.sql
+  db/init/anzma_schema_and_seed.sql -> 003_incidents.sql -> 004_chat_views.sql -> 005_alert_uniqueness.sql -> 006_ingestion_foundation.sql -> 007_event_source_identity.sql -> 008_ingestion_contract_conformance.sql -> 009_freshness_expectations.sql
 (migrations are applied twice to prove idempotency). Never touches any other database.
 
 Run:  python test_data_integrity.py      (needs a reachable PostgreSQL; PGHOST/PGPORT/PGUSER/PGPASSWORD as in the other tests)
@@ -29,7 +29,8 @@ SEQUENCE = [os.path.join(REPO, "db", "init", "anzma_schema_and_seed.sql"),
             os.path.join(ROOT, "db", "migrations", "005_alert_uniqueness.sql"),
             os.path.join(ROOT, "db", "migrations", "006_ingestion_foundation.sql"),
             os.path.join(ROOT, "db", "migrations", "007_event_source_identity.sql"),
-            os.path.join(ROOT, "db", "migrations", "008_ingestion_contract_conformance.sql")]
+            os.path.join(ROOT, "db", "migrations", "008_ingestion_contract_conformance.sql"),
+            os.path.join(ROOT, "db", "migrations", "009_freshness_expectations.sql")]
 CHECK, FK, UNIQUE, NOTNULL = "23514", "23503", "23505", "23502"
 T0 = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
 
@@ -121,10 +122,12 @@ def alert_params(rule="R1", method="threshold", sev="warning", asset=None, first
     return (rule, method, sev, asset or ASSET, first, last or first, first, status, resolved)
 
 
-@test("clean install: sequence applied, 20 tables and 8 views exist")
+@test("clean install: sequence applied, 23 tables including freshness schema and 8 views exist")
 def _():
     n = one("SELECT count(*) AS n FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'")["n"]
-    assert n == 20, n
+    assert n == 23, n
+    for table in ("reporting_expectations", "data_gaps", "series_freshness_current"):
+        assert one("SELECT count(*) AS n FROM information_schema.tables WHERE table_schema='public' AND table_name=%s", (table,))["n"] == 1
     v = one("SELECT count(*) AS n FROM information_schema.views WHERE table_schema='public'")["n"]
     assert v == 8, v
 

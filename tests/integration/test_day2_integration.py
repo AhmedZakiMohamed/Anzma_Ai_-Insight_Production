@@ -26,6 +26,7 @@ MIGRATION_005 = os.path.join(MIGRATION_DIR, "005_alert_uniqueness.sql")  # UNIQU
 MIGRATION_006 = os.path.join(MIGRATION_DIR, "006_ingestion_foundation.sql")  # additive ingestion and quality model
 MIGRATION_007 = os.path.join(MIGRATION_DIR, "007_event_source_identity.sql")  # source-scoped event identity
 MIGRATION_008 = os.path.join(MIGRATION_DIR, "008_ingestion_contract_conformance.sql")  # contract conformance fields
+MIGRATION_009 = os.path.join(MIGRATION_DIR, "009_freshness_expectations.sql")  # freshness expectations and schedule schema
 
 
 def connect(db, **kw):
@@ -56,7 +57,7 @@ def build_database():
         c.execute(sql003)                                  # idempotent: a second run must not fail
         conn.commit()
         after = snapshot(c)                                # snapshot proves 003 alone; 004/005 follow (runtime sequence)
-        for path in (MIGRATION_004, MIGRATION_005, MIGRATION_006, MIGRATION_007, MIGRATION_008):
+        for path in (MIGRATION_004, MIGRATION_005, MIGRATION_006, MIGRATION_007, MIGRATION_008, MIGRATION_009):
             sql = open(path, encoding="utf-8").read()
             c.execute(sql)
             conn.commit()
