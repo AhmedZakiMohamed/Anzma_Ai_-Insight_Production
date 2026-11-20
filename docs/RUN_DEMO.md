@@ -22,7 +22,7 @@ Open [http://localhost:8000](http://localhost:8000) for the dashboard. The API i
 
 Compose requires `PGPASSWORD`. If it reports that the variable is missing, confirm `.env` exists in the repository root, contains a non-empty `PGPASSWORD`, and that the command includes `--env-file .env`.
 
-On the first start with an empty PostgreSQL volume, Compose loads the schema and seed, then applies migrations 003–008. These initialization scripts do not rerun on an existing volume. Existing databases require migrations 006–008 using the documented migration runner; init scripts alone do not upgrade them. Normal restarts preserve the database. Avoid `docker compose down -v` unless you intend to delete the local PostgreSQL data and downloaded Ollama models.
+On the first start with an empty PostgreSQL volume, Compose loads the schema and seed, then applies migrations 003–009. These initialization scripts do not rerun on an existing volume. Existing databases require migrations 006–009 using the documented migration runner; init scripts alone do not upgrade them. Migration 009 adds freshness configuration/storage schema only; no evaluator job or application behavior is enabled. Normal restarts preserve the database. Avoid `docker compose down -v` unless you intend to delete the local PostgreSQL data and downloaded Ollama models.
 
 Alert detection runs at startup and periodically afterward (default interval: 60 seconds). The detector is idempotent. Ollama downloads the configured model on first startup; until it is ready, explanations can use the deterministic fallback. Check progress with:
 

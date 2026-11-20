@@ -1,12 +1,13 @@
 -- verify_schema.sql -- READ-ONLY catalog check of a live database against the authoritative schema
--- (base schema -> 003 -> 004 -> 005 -> 006 -> 007 -> 008; see DATABASE_BASELINE.md). Changes nothing: SELECT only.
+-- (base schema -> 003 -> 004 -> 005 -> 006 -> 007 -> 008 -> 009; see DATABASE_BASELINE.md). Changes nothing: SELECT only.
 -- Run:  psql -U anzma -d <db> -f verify_schema.sql        (every row must show status = OK)
 -- Exit status of psql is not affected by a failed check; read the status column (final row = overall verdict).
 WITH expected_tables(name) AS (VALUES
   ('buildings'),('locations'),('system_types'),('assets'),('metric_types'),('event_types'),
   ('metric_type_system_compat'),('event_type_system_compat'),('telemetry_records'),('event_records'),
   ('alerts'),('incidents'),('scenario_runs'),('schema_migrations'),('data_sources'),('source_credentials'),
-  ('asset_external_ids'),('ingestion_batches'),('ingestion_rejections'),('equipment_state_records')),
+  ('asset_external_ids'),('ingestion_batches'),('ingestion_rejections'),('equipment_state_records'),
+  ('reporting_expectations'),('data_gaps'),('series_freshness_current')),
 expected_views(name) AS (VALUES
   ('v_data_clock'),('v_asset_overview'),('v_incident_overview'),('v_alert_overview'),('v_camera_status'),
   ('v_telemetry_valid'),('v_asset_current_state'),('v_unmapped_external_assets')),
@@ -16,7 +17,9 @@ expected_indexes(name) AS (VALUES
   ('idx_alerts_incident'),('idx_incidents_location_last'),('idx_incidents_status'),('uq_alerts_rule_asset_first_ts'),
   ('uq_buildings_building_code'),('idx_source_credentials_source_active'),('idx_asset_external_ids_asset'),
   ('uq_event_source_event_id'),('idx_telemetry_source_received'),('idx_event_source_received'),
-  ('idx_equipment_state_asset_observed'),('uq_event_legacy_natural_key'),('idx_ingestion_rejections_unmapped')),
+  ('idx_equipment_state_asset_observed'),('uq_event_legacy_natural_key'),('idx_ingestion_rejections_unmapped'),
+  ('reporting_expectations_pkey'),('reporting_expectations_scope_priority_key'),('data_gaps_pkey'),
+  ('data_gaps_series_gap_key'),('series_freshness_current_pkey'),('series_freshness_current_series_key')),
 expected_columns(tbl, col) AS (VALUES
   ('alerts','incident_id'),('alerts','evidence'),('alerts','resolved_ts'),('alerts','explanation'),
   ('alerts','explanation_source'),('alerts','explained_at'),('incidents','grouping_rule'),
@@ -25,7 +28,25 @@ expected_columns(tbl, col) AS (VALUES
   ('source_credentials','key_hash'),('asset_external_ids','external_id'),('ingestion_batches','payload_sha256'),
   ('ingestion_rejections','payload'),('ingestion_rejections','source_id'),('ingestion_rejections','external_id'),
   ('ingestion_batches','delivery_mode'),('ingestion_batches','connector_status'),('data_sources','max_backdate_days'),
-  ('buildings','building_code'),
+  ('buildings','building_code'),('buildings','timezone'),('buildings','work_start_local'),
+  ('buildings','work_end_local'),('buildings','non_working_weekdays'),
+  ('reporting_expectations','expectation_id'),('reporting_expectations','scope'),
+  ('reporting_expectations','source_id'),('reporting_expectations','asset_id'),('reporting_expectations','asset_type'),
+  ('reporting_expectations','record_kind'),('reporting_expectations','metric_code'),('reporting_expectations','event_type'),
+  ('reporting_expectations','expected_interval_seconds'),('reporting_expectations','stale_multiplier'),
+  ('reporting_expectations','missing_multiplier'),('reporting_expectations','priority'),
+  ('reporting_expectations','valid_from'),('reporting_expectations','valid_to'),
+  ('reporting_expectations','expectation_version'),('reporting_expectations','created_at'),('reporting_expectations','updated_at'),
+  ('data_gaps','gap_id'),('data_gaps','source_id'),('data_gaps','asset_id'),('data_gaps','record_kind'),
+  ('data_gaps','metric_code'),('data_gaps','event_type'),('data_gaps','gap_start'),('data_gaps','gap_end'),
+  ('data_gaps','opened_at'),('data_gaps','last_evaluated_at'),('data_gaps','closed_by'),('data_gaps','closed_at'),
+  ('series_freshness_current','series_freshness_id'),('series_freshness_current','source_id'),
+  ('series_freshness_current','asset_id'),('series_freshness_current','record_kind'),
+  ('series_freshness_current','metric_code'),('series_freshness_current','event_type'),
+  ('series_freshness_current','freshness'),('series_freshness_current','last_observed_at'),
+  ('series_freshness_current','last_received_at'),('series_freshness_current','age_seconds'),
+  ('series_freshness_current','expected_interval_seconds'),('series_freshness_current','evaluated_at'),
+  ('series_freshness_current','expectation_id'),('series_freshness_current','expectation_version'),
   ('data_sources','source_id'),('data_sources','source_code'),('data_sources','building_id'),
   ('data_sources','source_type'),('data_sources','connector_name'),('data_sources','connector_version'),
   ('data_sources','status'),('data_sources','source_metadata'),('data_sources','created_at'),
@@ -75,7 +96,27 @@ expected_constraints(name) AS (VALUES
   ('equipment_state_records_ingestion_batch_id_fkey'),
   ('equipment_state_records_source_id_asset_id_observed_at_key'),
   ('equipment_state_records_reported_state_check'),('equipment_state_records_availability_check'),
-  ('equipment_state_records_check'),('metric_types_plausible_range_check')),
+  ('equipment_state_records_check'),('metric_types_plausible_range_check'),
+  ('buildings_timezone_nonempty_check'),('buildings_work_hours_check'),('buildings_non_working_weekdays_check'),
+  ('reporting_expectations_pkey'),('reporting_expectations_scope_check'),
+  ('reporting_expectations_record_kind_check'),('reporting_expectations_scope_keys_check'),
+  ('reporting_expectations_series_key_check'),('reporting_expectations_asset_type_check'),
+  ('reporting_expectations_interval_check'),('reporting_expectations_stale_multiplier_check'),
+  ('reporting_expectations_missing_multiplier_check'),('reporting_expectations_priority_check'),
+  ('reporting_expectations_version_check'),('reporting_expectations_validity_check'),
+  ('reporting_expectations_scope_priority_key'),('reporting_expectations_source_id_fkey'),
+  ('reporting_expectations_asset_id_fkey'),('reporting_expectations_metric_code_fkey'),
+  ('reporting_expectations_event_type_fkey'),('data_gaps_pkey'),('data_gaps_record_kind_check'),
+  ('data_gaps_series_key_check'),('data_gaps_closure_check'),('data_gaps_series_gap_key'),
+  ('data_gaps_source_id_fkey'),('data_gaps_asset_id_fkey'),('data_gaps_metric_code_fkey'),
+  ('data_gaps_event_type_fkey'),('series_freshness_current_pkey'),
+  ('series_freshness_current_record_kind_check'),('series_freshness_current_series_key_check'),
+  ('series_freshness_current_state_check'),('series_freshness_current_observation_check'),
+  ('series_freshness_current_age_check'),('series_freshness_current_interval_check'),
+  ('series_freshness_current_version_check'),('series_freshness_current_series_key'),
+  ('series_freshness_current_source_id_fkey'),('series_freshness_current_asset_id_fkey'),
+  ('series_freshness_current_metric_code_fkey'),('series_freshness_current_event_type_fkey'),
+  ('series_freshness_current_expectation_id_fkey')),
 checks AS (
   SELECT 1 AS n, 'tables missing' AS check_name, '0' AS expected,
          (SELECT count(*) FROM expected_tables e WHERE NOT EXISTS
@@ -122,6 +163,12 @@ checks AS (
          (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
           WHERE n.nspname='public' AND p.proname='validate_source_asset_building'
             AND pg_get_function_identity_arguments(p.oid)='')::text
+  UNION ALL SELECT 16, 'global freshness default expectations present', '3',
+         (SELECT count(*) FROM reporting_expectations
+          WHERE scope='GLOBAL' AND priority=0 AND stale_multiplier=2 AND missing_multiplier=5
+            AND ((record_kind='telemetry' AND expected_interval_seconds=900 AND metric_code IS NULL AND event_type IS NULL)
+              OR (record_kind='event' AND expected_interval_seconds=3600 AND event_type='heartbeat' AND metric_code IS NULL)
+              OR (record_kind='source' AND expected_interval_seconds=300 AND metric_code IS NULL AND event_type IS NULL)))::text
 )
 SELECT n, check_name, expected, actual,
        CASE WHEN expected LIKE '>=%' THEN CASE WHEN actual::int >= substr(expected,3)::int THEN 'OK' ELSE 'FAIL' END

@@ -2,19 +2,20 @@
 
 | | |
 |---|---|
-| **Status** | Canonical model and implementation reference. Migrations 006–008 implement the approved ingestion foundation and event identity constraints; optional structures below remain proposals. |
-| **Baseline** | Historical deployed baseline: 13 tables and 5 views through migration 005. Repository target includes migrations 006–008; see `DATABASE_BASELINE.md` and `DATA_MIGRATION_PLAN.md`. |
+| **Status** | Canonical model and implementation reference. Migrations 006–009 implement ingestion and freshness configuration/storage schema; freshness evaluation and derived equipment state remain future behavior. |
+| **Baseline** | Historical deployed baseline: 13 tables and 5 views through migration 005. Repository target includes migrations 006–009; see `DATABASE_BASELINE.md` and `DATA_MIGRATION_PLAN.md`. |
 | **Related** | `CORE_DATA_ARCHITECTURE.md`, `HISTORIAN_DESIGN.md`, `DATA_MIGRATION_PLAN.md`, `SPRINT_1_TECHNICAL_ISSUES.md` |
 
-Notation: **[Existing]** present before migration 006 · **[Implemented]** added by migrations 006–008/code · **[NEW]** future proposal · **[Open]** requires a separate decision.
+Notation: **[Existing]** present before migration 006 · **[Implemented]** added by migrations 006–009/code · **[NEW]** future proposal · **[Open]** requires a separate decision.
 No DDL here is a migration; the column lists are specifications for review.
 
-## Implementation status (18 November 2026)
+## Implementation status (18–20 November 2026)
 
 - **Implemented and runtime-verified:** multiple buildings, locations, system types and assets are represented by `buildings`, `locations`, `system_types`, and `assets`; assets reference a system and location, and locations reference a building. PostgreSQL also contains historical `telemetry_records`, `event_records`, alerts, and incidents. Telemetry/event rows do not carry explicit building IDs; building is derived through the asset/location relationship.
 - **Implemented and test-verified:** alert rules and anomaly detection, incident grouping/lifecycle, evidence re-reading and grounding checks, recommendations, chat/dashboard routes, and the Day 3 bandwidth percentage correction. The current checkout's offline unit suite passed 25/25; see `PRODUCTIZATION_IMPLEMENTATION_REPORT.md` for the bounded verification record.
-- **Implemented (migrations 006–008 + code):** `/api/v1/ingest/batches`, source registry and hashed credentials, source-scoped asset IDs, nullable provenance/quality columns, batch/rejection audit, append-only equipment-state facts, quality-aware telemetry view, distinct source event IDs at a shared asset/type/time, and migration 008 back-date/diagnostics/audit/plausibility fields. Existing facts were not backfilled; operational readers exclude quality `BAD` while retaining legacy `NULL` quality.
-- **Not implemented:** freshness/gap tracking, retention policy, rollups, organization hierarchy, and migrations 006–008 application to the shared runtime database.
+- **Implemented (migrations 006–009 + code):** `/api/v1/ingest/batches`, source registry and hashed credentials, source-scoped asset IDs, nullable provenance/quality columns, batch/rejection audit, append-only equipment-state facts, quality-aware telemetry view, distinct source event IDs at a shared asset/type/time, migration 008 back-date/diagnostics/audit/plausibility fields, and migration 009 building schedules/expectations/gap/current-freshness storage. Existing facts were not backfilled; migration 009 only backfills new building schedule fields. Operational readers exclude quality `BAD` while retaining legacy `NULL` quality.
+- **E2 schema update (20 November 2026):** migration 009 adds nullable building schedule fields, contract-ordered `reporting_expectations`, `data_gaps`, and `series_freshness_current`, plus global telemetry/heartbeat/source defaults. Existing building schedule fields are backfilled; historical fact rows are unchanged. This does not implement an evaluator, alert/incident generation, or consumer behavior.
+- **Not implemented:** freshness evaluation and gap lifecycle processing, retention policy, rollups, organization hierarchy, and migrations 006–009 application to the shared runtime database.
 - **Known limitation:** the existing seed is synthetic. The current multi-building schema is a structural capability, not proof that every API, chat query, or dashboard path enforces building-level isolation.
 - **Approved and implemented for contract v1 (18 November 2026):** `/api/v1/ingest/batches`; per-record outcomes committed in one batch transaction; external IDs unique per source and mapped only to assets in that source's building; per-source bearer API keys stored as hashes with revocation/rotation; first-write-wins for telemetry conflicts, with rejected payloads retained separately.
 
@@ -54,10 +55,11 @@ No DDL here is a migration; the column lists are specifications for review.
 | `metric_type_system_compat`, `event_type_system_compat` | [Existing] | Which metric/event is valid on which system. |
 | `telemetry_records` | [Existing] + new columns | Time-series measurements (the Historian fact table). |
 | `event_records` | [Existing] + new columns | Operational events. |
-| `reporting_expectations` | **[NEW entity]** | Expected reporting interval per asset/metric. |
+| `reporting_expectations` | **[Implemented schema, 009]** | Expected interval and override per contract scope; no evaluator yet. |
 | `asset_state_current` | **[NEW entity]** | One row per asset: current state + freshness. |
 | `asset_state_history` | **[NEW entity]** | Append-only state transitions. |
-| `data_gaps` | **[NEW entity]** | Detected missing-data intervals. |
+| `data_gaps` | **[Implemented schema, 009]** | Open/closed missing-series gap audit; no writer/job yet. |
+| `series_freshness_current` | **[Implemented schema, 009]** | Current per-series freshness storage; no writer/job yet. |
 | `alerts` | [Existing] + new columns | Detected conditions. |
 | `incidents` | [Existing] + new columns | Managed cases grouping alerts. |
 | `alert_evidence` | **[NEW entity]** | FK-backed evidence rows per alert. |
@@ -106,8 +108,9 @@ Diagram notes: `retention_policies`, `unit_conversions`, `metric_type_system_com
 | `name` TEXT UNIQUE | [Existing] (should become unique per organization **[Open]**) |
 | `organization_id` BIGINT FK | **[NEW column]**, backfilled to the default organization |
 | `building_code` TEXT UNIQUE | **[NEW column]** stable code used in the contract (e.g. `MAIN-TOWER`) |
-| `timezone` TEXT | **[NEW column]** IANA name, validated against `pg_timezone_names`; replaces `LOCAL_UTC_OFFSET` **[Open Q2]** |
-| `work_start_local`, `work_end_local` TIME | **[NEW column]** replace `WORK_START/WORK_END` (8/18) |
+| `timezone` TEXT NULL | **[Implemented column, 009]** IANA name; CLI validates with Python `zoneinfo`; existing buildings are backfilled to `Etc/GMT-2`; NULL uses the approved compatibility default in future application code |
+| `work_start_local`, `work_end_local` TIME NULL | **[Implemented columns, 009]** checked start-before-end; existing buildings backfilled to 08:00–18:00; alert behavior replacement is future work |
+| `non_working_weekdays` SMALLINT[] NULL | **[Implemented column, 009]** ISO weekday values 1–7; existing buildings backfilled to an empty array; holiday dates are deferred |
 
 **`locations` [Existing] + new columns**
 
@@ -222,7 +225,9 @@ Four *independent* dimensions plus lifecycle. All are about the **equipment/data
 
 ## 9. Freshness and missing-data semantics
 
-**`reporting_expectations`** [NEW entity]: `(asset_id, metric_id NULL=heartbeat/any, expected_interval_s, stale_factor, missing_factor, is_liveness)`; defaults per asset type/metric where no row exists. Initial values are taken from observed behaviour [Verified]: telemetry every **900 s** (seed), heartbeat every **3600 s** (`dashboard_core_pg._heartbeat_compliance`, seed). Event-only devices (door readers) have no telemetry expectation → `NOT_APPLICABLE` unless they send heartbeats.
+**`reporting_expectations`** [Implemented schema, migration 009]: scopes are exactly `ASSET_METRIC`, `ASSET_TYPE_METRIC`, `SOURCE`, and `GLOBAL`, resolved in contract §9 order. Fields include `record_kind`, metric/event key, positive interval, stale/missing multipliers, priority, validity range, and expectation version. Seeded global rows are telemetry 900s, heartbeat 3600s, and source keepalive 300s; stale/missing multipliers are 2/5. No evaluator reads the table yet. Event-only devices without an expected heartbeat remain `NOT_APPLICABLE` under contract §9.
+
+**`data_gaps` and `series_freshness_current`** [Implemented schema, migration 009]: these tables are empty initially and have no application writer in E2. The approved future evaluator opens a gap only when a series reaches `MISSING`, uses `last_observed_at` as `gap_start`, and closes it at the first new observation. Backfill-driven gap splitting is deferred. Freshness creates no alerts or incidents; it does not write `asset_state_current` or change availability (item 1.4).
 
 **Initial rules** (defaults for discussion; all configurable):
 
@@ -299,7 +304,7 @@ Migration 006 implements `data_sources`, `source_credentials`, source-scoped `as
 | `GOOD` | Valid, plausible, trusted | `telemetry_records.quality` | KPI, alerts, charts |
 | `UNCERTAIN` | Valid but source flagged low confidence (e.g. sensor warming up, substituted value) | `quality` | KPI/alerts **include** by default but the evidence marks it; configurable |
 | `BAD` | Structurally valid but unusable (outside plausible range, connector-declared bad) | `quality` | Kept for audit; **excluded** from KPI/alerts via a compatibility view |
-| `MISSING` | No value was obtained for an expected observation | Not accepted as telemetry quality in v1; no `data_gaps` table is implemented | future freshness/gap reports |
+| `MISSING` | No value was obtained for an expected observation | Not accepted as telemetry quality; migration 009 adds `data_gaps`, but no evaluator writes to it yet | future freshness/gap reports |
 
 How other conditions are represented:
 
@@ -308,7 +313,7 @@ How other conditions are represented:
 | **Invalid** (schema, unknown asset/metric/unit, bad timestamp, non-finite value) | Rejected; row in `ingestion_rejections`; never in the Historian |
 | **Implausible** (outside `min/max_plausible`) | Stored `BAD` |
 | **Stale** | Derived `freshness=STALE` (not a property of a measurement) |
-| **Missing** | Absence; explicit gap tracking is future work |
+| **Missing** | Absence; future evaluator opens/closes the migration-009 gap audit |
 | **Delayed** | `received_at − ts > source delay threshold`; derived `is_late`; late rows can still be evaluated by the idempotent detection run |
 | **Duplicate** | No-op, counted in `ingestion_batches.duplicate_count` |
 
@@ -329,7 +334,7 @@ Existing rows retain `quality=NULL` because their historical quality is unknown.
 
 | Table | Constraint / index | Reason |
 |---|---|---|
-| `buildings` | `UNIQUE (building_code)`; trigger/CHECK validating `timezone`; `CHECK (work_start_local < work_end_local)` | contract identity; replaces fixed UTC+2 |
+| `buildings` | nullable `timezone`, nullable work times, weekday range check, start-before-end check; existing rows receive parity defaults; CLI validates IANA names | migration 009; work-hour alert behavior is later |
 | `locations` | `UNIQUE (location_id, building_id)`; FK `(parent_location_id, building_id)`; CHECK `location_type` | same-building hierarchy |
 | `assets` | `UNIQUE (asset_id, building_id)`; FK `(location_id, building_id)`; FK `(parent_asset_id, building_id)`; `CHECK (parent_asset_id <> asset_id)`; CHECK `lifecycle_status` | building consistency, no self-parent |
 | `asset_external_ids` | PK `(source_id, external_id)`; index `(asset_id)` | resolution |
@@ -337,7 +342,9 @@ Existing rows retain `quality=NULL` because their historical quality is unknown.
 | `telemetry_records` | keep `UNIQUE (asset_id, metric_id, ts)`; FK `(asset_id, building_id)`; CHECK `quality`; `CHECK (received_at IS NULL OR ts <= received_at + interval '5 minutes')`; index `(building_id, ts)`; index `(source_id, received_at)` | idempotency, provenance, building analytics |
 | `event_records` | keep source event unique key; legacy natural key is partial where `source_event_id IS NULL`; FK `(asset_id, building_id)` and additional indexes remain future proposals | F-15 |
 | `event_types` | self-FK `resolves_event_type_id`; CHECK `event_class` | single fault/recovery definition |
-| `reporting_expectations` | `UNIQUE (asset_id, metric_id)` (NULL metric handled by a partial unique index); `CHECK (expected_interval_s > 0)` | |
+| `reporting_expectations` | four scope values and exact scope-key CHECK; `UNIQUE NULLS NOT DISTINCT (scope, priority, scope keys)`; positive interval, `missing_multiplier > stale_multiplier`, validity check | migration 009; prevents equal-priority ambiguity |
+| `data_gaps` | unique NULLS NOT DISTINCT series identity + `gap_start`; closure fields are all-null while open or all-set when closed | migration 009; backfill splitting deferred |
+| `series_freshness_current` | unique NULLS NOT DISTINCT series identity; freshness/observation/age checks; FK to expectation and version used | migration 009; table is not populated until a future evaluator |
 | `asset_state_current` | PK `asset_id`; CHECK enums; **CHECK: `freshness IN ('FRESH','NOT_APPLICABLE') OR operational_state` stays independent** (no silence-implies-state rule) | AD-06 |
 | `asset_state_history` | index `(asset_id, observed_at DESC)`; append-only trigger | state history queries |
 | `alerts` | `UNIQUE (rule_id, asset_id, first_ts)`; FK `(asset_id, building_id)`; index `(building_id, status, first_ts DESC)` | F-14 |
@@ -472,7 +479,7 @@ Vendor B raw (illustrative): `{"deviceId":"B-77/ai3","value":24.6,"unit":"Celsiu
 
 - **Contract version** `MAJOR.MINOR` in every envelope and stored per row (`contract_version`). This implementation accepts `1.0`; future compatibility/deprecation windows require a versioned contract change.
 - **Unknown fields:** ignored with a warning in the response; only `source_metadata`/`details` content is persisted opaque. Unknown enum values → reject.
-- **Schema evolution:** migrations `003_incidents.sql` through `008_ingestion_contract_conformance.sql` exist. Migration 006 adds `schema_migrations`; `scripts/apply_migrations.py` applies 006+ to existing databases under an advisory lock. Compose init mounts still apply only to empty database volumes.
-- **Backward compatibility rules:** migrations 006–008 preserve historical fact rows; existing endpoints and response shapes (`/dashboard/*`, `/alerts`, `/incidents`, `/chat`, `/ask`, `POST /events`, `POST /alerts`) remain supported. Legacy facts retain NULL source/quality/received metadata, and legacy event duplicate handling stays intact.
+- **Schema evolution:** migrations `003_incidents.sql` through `009_freshness_expectations.sql` exist. Migration 006 adds `schema_migrations`; `scripts/apply_migrations.py` applies 006+ to existing databases under an advisory lock. Compose init mounts still apply only to empty database volumes.
+- **Backward compatibility rules:** migrations 006–009 preserve historical fact rows; migration 009 only backfills new building schedule fields. Existing endpoints and response shapes (`/dashboard/*`, `/alerts`, `/incidents`, `/chat`, `/ask`, `POST /events`, `POST /alerts`) remain supported. Legacy facts retain NULL source/quality/received metadata, and legacy event duplicate handling stays intact.
 - **API compatibility:** the versioned route is `POST /api/v1/ingest/batches`; batch result retrieval is `GET /api/v1/ingest/batches/{batch_id}`.
 - **Terminology for UI vs DB** stays a translation layer (AD-04).

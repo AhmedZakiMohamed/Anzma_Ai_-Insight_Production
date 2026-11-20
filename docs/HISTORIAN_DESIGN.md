@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Status** | Historian design plus implemented ingestion foundation. Migrations 006–008 add provenance/quality fields, append-only state facts, and source-aware event identity; freshness/gap tracking, retention, and rollups remain future work. |
-| **Baseline** | PostgreSQL 16; migrations 006–008 are included for fresh volumes and can be applied additively to existing volumes with the documented runner. The shared database was not migrated. |
+| **Status** | Historian design plus implemented ingestion and freshness schema. Migrations 006–008 add ingestion provenance/state facts; migration 009 adds expectation, gap, and current-freshness storage plus building schedules. The freshness evaluator, derived state, retention, and rollups remain future work. |
+| **Baseline** | PostgreSQL 16; migrations 006–009 are included for fresh volumes and can be applied additively to existing volumes with the documented runner. The shared database was not migrated. |
 | **Related** | `CANONICAL_DATA_MODEL.md` (entities/columns named here), `DATA_MIGRATION_PLAN.md`, `SPRINT_1_TECHNICAL_ISSUES.md` |
 
 Entities marked *(proposed)* are defined in `CANONICAL_DATA_MODEL.md`. SQL below is **illustrative query design**, not a migration; column names that do not exist today are marked *(proposed)*.
@@ -188,28 +188,30 @@ ORDER BY ts;
 
 ## 9. Missing-data detection
 
-Inputs: `reporting_expectations.expected_interval_s` (E) per asset/metric, `received_at`, `ts`.
+Inputs: `reporting_expectations.expected_interval_seconds` (E) per resolved series, `received_at`, `ts`. Migration 009 creates the expectation and gap tables; no freshness job writes them yet.
 
 | Condition | Detection | Output |
 |---|---|---|
-| **Missing expected measurement** | For an active series, `evaluation_time − last_observed_at > missing_factor × E`; or a consecutive-sample gap `ts − lag(ts) > missing_factor × E` in history | `data_gaps(gap_start, gap_end NULL while open, cause='NOT_RECEIVED')`; `freshness=MISSING` |
-| **Stale telemetry** | `stale_factor × E < age ≤ missing_factor × E` | `freshness=STALE`; no gap yet |
+| **Missing expected measurement** | For an expected series, `age > missing_multiplier × E` | On reaching `MISSING`, open `data_gaps` with `gap_start=last_observed_at`; close at the first new observation |
+| **Stale telemetry** | `stale_multiplier × E < age ≤ missing_multiplier × E` | `freshness=STALE`; no gap yet |
 | **Delayed ingestion** | `received_at − ts` above a per-source threshold | derived `is_late`, per-source latency stats; no state change |
 | **Communication failure** | all liveness series of an asset (or the whole source) beyond `missing_factor × E`, or `data_sources.status` in (`ERROR`,`DISABLED`) | `communication_status=LOST` (or `UNKNOWN` with `SOURCE_ERROR`); **`availability` unchanged** |
 | **Irregular sampling** | spacing coefficient of variation or share of intervals outside `[0.5E, 1.5E]` over a window | reported by the gap query; informational |
-| **Missing observation** | connector omits the record; v1 rejects `quality=MISSING` | freshness/gap derivation is future work; no `data_gaps` row is written in v1 |
+| **Missing observation** | connector omits the record; v1 rejects `quality=MISSING` | Migration 009 adds storage; the future evaluator writes gaps. Backfill gap splitting is deferred. |
 
-Illustrative gap query (history):
+Illustrative gap query (history only; a production evaluator must resolve the contract's expectation-scope precedence):
 
 ```sql
 WITH s AS (
-  SELECT asset_id, metric_id, ts,
-         lag(ts) OVER (PARTITION BY asset_id, metric_id ORDER BY ts) AS prev_ts
-  FROM telemetry_records WHERE ts >= %(start)s AND ts < %(end)s)
-SELECT s.asset_id, s.metric_id, s.prev_ts AS gap_start, s.ts AS gap_end
-FROM s JOIN reporting_expectations e                                             -- proposed
-  ON e.asset_id = s.asset_id AND e.metric_id = s.metric_id
-WHERE s.ts - s.prev_ts > make_interval(secs => e.expected_interval_s * e.missing_factor);
+  SELECT tr.asset_id, tr.source_id, mt.name AS metric_code, tr.ts,
+         lag(tr.ts) OVER (PARTITION BY tr.source_id,tr.asset_id,tr.metric_id ORDER BY tr.ts) AS prev_ts
+  FROM telemetry_records tr JOIN metric_types mt USING (metric_id)
+  WHERE tr.ts >= %(start)s AND tr.ts < %(end)s)
+SELECT s.asset_id, s.metric_code, s.prev_ts AS gap_start, s.ts AS gap_end
+FROM s JOIN reporting_expectations e
+  ON e.scope='ASSET_METRIC' AND e.asset_id=s.asset_id AND e.record_kind='telemetry'
+ AND e.metric_code=s.metric_code AND e.valid_from <= s.ts AND (e.valid_to IS NULL OR e.valid_to > s.ts)
+WHERE s.ts - s.prev_ts > make_interval(secs => e.expected_interval_seconds * e.missing_multiplier);
 ```
 
 Compatibility note: today’s `no_data` health status (KPI) and `heartbeat_compliance` (hourly assumption) remain computed as they are; the new detection adds information, it does not rewrite those KPIs. The seed’s Camera 2 outages (silent 45–44 h ago and the last 5 h) are the natural regression scenario: they must still produce `no_data` in the KPI and now additionally `freshness=MISSING` with `availability` driven only by the `camera_offline` events.
@@ -303,9 +305,9 @@ Phases are sequencing only — **no dates or owners are assigned**.
 | Phase | Scope | Exit criteria |
 |---|---|---|
 | H0 — Baseline | Golden-output capture of KPI/alerts/incidents/evidence on a copy of the database; backup/restore rehearsal | Baseline stored; restore verified |
-| H1 — Foundation schema | Additive columns/tables (`building_id`, provenance, `data_sources`, `ingestion_*`, `reporting_expectations`); backfill; compatibility views; migration runner | Existing tests + parity checks green; no behaviour change |
+| H1 — Foundation schema | Additive columns/tables (`building_id`, provenance, `data_sources`, `ingestion_*`, `reporting_expectations`, `data_gaps`, `series_freshness_current`); building schedule parity backfill; compatibility views; migration runner | Existing tests + parity checks green; no behavior change |
 | H2 — Ingestion service | Implemented by migrations 006–008 and `/api/v1/ingest/batches`; legacy `POST /events` remains | Conformance vectors and regression evidence are in `INGESTION_CONTRACT.md` and `PRODUCTIZATION_IMPLEMENTATION_REPORT.md` |
-| H3 — State & freshness | `asset_state_current/history`, freshness job, `data_gaps`, `series_freshness` | Camera-2 scenario verified; KPI output identical |
+| H3 — State & freshness | Future `asset_state_current/history` and evaluator using the migration-009 gap/current tables | Camera-2 scenario verified; KPI output identical; no freshness alerts/incidents |
 | H4 — Historical query layer | `HistorianRepository` + building-aware views; endpoints reuse it; parity with `frontend_api.trends` | Parity tests |
 | H5 — Evidence & alert hardening | `alert_evidence` dual-write; unique alert index; advisory lock | Evidence verification unchanged (`test_day2_integration.py`) |
 | H6 — Retention & operations | `retention_policies` (disabled by default), integrity-check job, backup schedule | Runbook reviewed |

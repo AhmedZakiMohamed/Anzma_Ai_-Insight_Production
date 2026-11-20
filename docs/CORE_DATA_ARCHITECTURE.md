@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Document** | Week 3 / Day 1 — Data Architecture & Core Reliability |
-| **Status** | Historical runtime baseline plus implemented ingestion extensions in migrations 006–008. Other target architecture sections remain proposals unless marked implemented. |
+| **Status** | Historical runtime baseline plus implemented ingestion extensions in migrations 006–008 and approved additive freshness schema in migration 009. Other target architecture sections remain proposals unless marked implemented. |
 | **Source of truth** | Repository code/migrations on `feature/ingestion-foundation`, plus the separately recorded read-only inspection of the pre-006 running database. Migration 006 has not been applied to that existing database. |
 | **Related** | `CANONICAL_DATA_MODEL.md`, `HISTORIAN_DESIGN.md`, `DATA_MIGRATION_PLAN.md`, `SPRINT_1_TECHNICAL_ISSUES.md` |
 
@@ -29,6 +29,7 @@ Anzma AI Insight today is a single-database, simulated-data application. The his
 5. `db/migrations/006_ingestion_foundation.sql` — sources/hashed credentials, scoped asset mappings, nullable fact provenance and quality, batch/rejection audit, state facts, and compatibility views.
 6. `db/migrations/007_event_source_identity.sql` — preserve the legacy event key only for rows without source IDs; source events are unique by `(source_id, source_event_id)`.
 7. `db/migrations/008_ingestion_contract_conformance.sql` — back-date policy, batch/source diagnostics, rejection lookup metadata/view, and optional plausibility bounds.
+8. `db/migrations/009_freshness_expectations.sql` — nullable building timezone/schedule, expectation defaults, and gap/current-freshness storage; no evaluator or alert behavior.
 
 The existing intelligence (KPI engine, alert engine, incident engine, evidence verification, grounding validation, chat assistant) is coherent and tested (`TEST_RESULTS_DAY2.txt`: 43/43 integration checks; `TEST_RESULTS_CHAT_CONSISTENCY.txt`: 31/31). **It should be preserved, not rewritten.**
 

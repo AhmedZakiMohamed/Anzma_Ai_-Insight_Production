@@ -154,7 +154,7 @@ To rebuild only the API after changing application or dashboard files:
 docker compose --env-file .env -p anzma-insight -f deploy/compose/docker-compose.yml up -d --build api
 ```
 
-The PostgreSQL initialization scripts run only when the database volume is empty. Existing volumes are not reseeded automatically; apply migrations 006–008 to an existing database with the documented runner in [`docs/DATA_MIGRATION_PLAN.md`](docs/DATA_MIGRATION_PLAN.md). Avoid `down -v` for routine restarts: it deletes the local PostgreSQL data and downloaded Ollama models. Compose binds PostgreSQL and Ollama to loopback by default. Compose services and initialization mounts are defined in [`deploy/compose/docker-compose.yml`](deploy/compose/docker-compose.yml).
+The PostgreSQL initialization scripts run only when the database volume is empty. Existing volumes are not reseeded automatically; apply migrations 006–009 to an existing database with the documented runner in [`docs/DATA_MIGRATION_PLAN.md`](docs/DATA_MIGRATION_PLAN.md). Migration 009 adds nullable building schedules and freshness expectation/gap/current-state schema; it does not run a freshness job or change application behavior. Avoid `down -v` for routine restarts: it deletes the local PostgreSQL data and downloaded Ollama models. Compose binds PostgreSQL and Ollama to loopback by default. Compose services and initialization mounts are defined in [`deploy/compose/docker-compose.yml`](deploy/compose/docker-compose.yml).
 
 If Ollama or its model is unavailable, database-backed dashboard features continue to work and explanations can use the deterministic fallback. The AI runtime is optional for normal dashboard operation.
 
