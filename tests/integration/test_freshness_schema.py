@@ -73,7 +73,8 @@ class FreshnessSchemaTests(unittest.TestCase):
         ])
         buildings = self.conn.execute(
             """SELECT timezone,work_start_local,work_end_local,non_working_weekdays
-               FROM buildings ORDER BY building_id"""
+               FROM buildings WHERE name IN ('Main Tower','Data Center Annex')
+               ORDER BY building_id"""
         ).fetchall()
         self.assertTrue(buildings)
         self.assertTrue(all(

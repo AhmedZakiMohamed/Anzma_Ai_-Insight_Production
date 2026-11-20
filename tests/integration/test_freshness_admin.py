@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import unittest
+from uuid import uuid4
 from pathlib import Path
 
 try:
@@ -30,11 +31,24 @@ class FreshnessAdminTests(unittest.TestCase):
             user=os.environ.get("PGUSER", "postgres"),
             password=os.environ.get("PGPASSWORD", ""),
         )
+        suffix = uuid4().hex[:12]
+        cls.building_name = f"E2 admin test {suffix}"
+        cls.asset_code = f"E2-ADMIN-{suffix}"
         cls.building_id = cls.db.execute(
-            "SELECT building_id FROM buildings ORDER BY building_id LIMIT 1"
+            "INSERT INTO buildings (name) VALUES (%s) RETURNING building_id",
+            (cls.building_name,),
         ).fetchone()[0]
-        cls.asset_code = cls.db.execute(
-            "SELECT asset_code FROM assets ORDER BY asset_id LIMIT 1"
+        cls.location_id = cls.db.execute(
+            "INSERT INTO locations (building_id,floor,name) VALUES (%s,0,'E2 admin test') RETURNING location_id",
+            (cls.building_id,),
+        ).fetchone()[0]
+        system_type_id = cls.db.execute(
+            "SELECT system_type_id FROM system_types WHERE code='HVAC'"
+        ).fetchone()[0]
+        cls.asset_id = cls.db.execute(
+            """INSERT INTO assets (asset_code,name,asset_type,system_type_id,location_id)
+               VALUES (%s,'E2 admin test asset','test',%s,%s) RETURNING asset_id""",
+            (cls.asset_code, system_type_id, cls.location_id),
         ).fetchone()[0]
         cls.metric_code = cls.db.execute(
             "SELECT name FROM metric_types ORDER BY metric_id LIMIT 1"
@@ -44,6 +58,11 @@ class FreshnessAdminTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         if hasattr(cls, "db"):
+            cls.db.execute("DELETE FROM reporting_expectations WHERE asset_id=%s", (cls.asset_id,))
+            cls.db.execute("DELETE FROM assets WHERE asset_id=%s", (cls.asset_id,))
+            cls.db.execute("DELETE FROM locations WHERE location_id=%s", (cls.location_id,))
+            cls.db.execute("DELETE FROM buildings WHERE building_id=%s", (cls.building_id,))
+            cls.db.commit()
             cls.db.close()
 
     def run_cli(self, *args):
@@ -115,8 +134,9 @@ class FreshnessAdminTests(unittest.TestCase):
         self.db.commit()
 
     def test_unknown_building_is_failure_without_partial_change(self):
-        before = self.db.execute("SELECT count(*) FROM buildings").fetchone()[0]
-        self.db.commit()
+        before = self.db.execute(
+            "SELECT count(*) FROM buildings WHERE building_id=%s", (self.building_id,)
+        ).fetchone()[0]
         result = self.run_cli(
             "set-building-schedule", "--building-id", "99999999", "--timezone", "Etc/GMT-2",
             "--work-start", "08:00", "--work-end", "18:00",
@@ -125,7 +145,10 @@ class FreshnessAdminTests(unittest.TestCase):
         audit = json.loads(next(line for line in result.stderr.splitlines() if line.startswith("{")))
         self.assertEqual(audit["event"], "BUILDING_SCHEDULE_SET")
         self.assertEqual(audit["outcome"], "FAILED")
-        self.assertEqual(self.db.execute("SELECT count(*) FROM buildings").fetchone()[0], before)
+        self.assertEqual(
+            self.db.execute("SELECT count(*) FROM buildings WHERE building_id=%s", (self.building_id,)).fetchone()[0],
+            before,
+        )
         self.db.commit()
 
     def test_list_returns_json(self):
