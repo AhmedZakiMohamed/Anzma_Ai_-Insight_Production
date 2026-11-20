@@ -1,5 +1,5 @@
 -- verify_schema.sql -- READ-ONLY catalog check of a live database against the authoritative schema
--- (base schema -> 003 -> 004 -> 005 -> 006 -> 007 -> 008 -> 009; see DATABASE_BASELINE.md). Changes nothing: SELECT only.
+-- (base schema -> 003 -> 004 -> 005 -> 006 -> 007 -> 008 -> 009 -> 010; see DATABASE_BASELINE.md). Changes nothing: SELECT only.
 -- Run:  psql -U anzma -d <db> -f verify_schema.sql        (every row must show status = OK)
 -- Exit status of psql is not affected by a failed check; read the status column (final row = overall verdict).
 WITH expected_tables(name) AS (VALUES
@@ -19,7 +19,8 @@ expected_indexes(name) AS (VALUES
   ('uq_event_source_event_id'),('idx_telemetry_source_received'),('idx_event_source_received'),
   ('idx_equipment_state_asset_observed'),('uq_event_legacy_natural_key'),('idx_ingestion_rejections_unmapped'),
   ('reporting_expectations_pkey'),('reporting_expectations_scope_priority_key'),('data_gaps_pkey'),
-  ('data_gaps_series_gap_key'),('series_freshness_current_pkey'),('series_freshness_current_series_key')),
+  ('data_gaps_series_gap_key'),('uq_data_gaps_one_open_per_series'),('idx_data_gaps_building_detected_at'),
+  ('series_freshness_current_pkey'),('series_freshness_current_series_key')),
 expected_columns(tbl, col) AS (VALUES
   ('alerts','incident_id'),('alerts','evidence'),('alerts','resolved_ts'),('alerts','explanation'),
   ('alerts','explanation_source'),('alerts','explained_at'),('incidents','grouping_rule'),
@@ -40,6 +41,9 @@ expected_columns(tbl, col) AS (VALUES
   ('data_gaps','gap_id'),('data_gaps','source_id'),('data_gaps','asset_id'),('data_gaps','record_kind'),
   ('data_gaps','metric_code'),('data_gaps','event_type'),('data_gaps','gap_start'),('data_gaps','gap_end'),
   ('data_gaps','opened_at'),('data_gaps','last_evaluated_at'),('data_gaps','closed_by'),('data_gaps','closed_at'),
+  ('data_gaps','building_id'),('data_gaps','expected_interval_seconds'),('data_gaps','detected_at'),
+  ('data_gaps','opened_in_work_hours'),('data_gaps','cause'),('data_gaps','cause_updated_at'),
+  ('assets','lifecycle_status'),
   ('series_freshness_current','series_freshness_id'),('series_freshness_current','source_id'),
   ('series_freshness_current','asset_id'),('series_freshness_current','record_kind'),
   ('series_freshness_current','metric_code'),('series_freshness_current','event_type'),
@@ -109,7 +113,9 @@ expected_constraints(name) AS (VALUES
   ('reporting_expectations_event_type_fkey'),('data_gaps_pkey'),('data_gaps_record_kind_check'),
   ('data_gaps_series_key_check'),('data_gaps_closure_check'),('data_gaps_series_gap_key'),
   ('data_gaps_source_id_fkey'),('data_gaps_asset_id_fkey'),('data_gaps_metric_code_fkey'),
-  ('data_gaps_event_type_fkey'),('series_freshness_current_pkey'),
+  ('data_gaps_event_type_fkey'),('data_gaps_building_id_fkey'),('data_gaps_expected_interval_check'),
+  ('data_gaps_cause_check'),('data_gaps_boundaries_check'),('assets_lifecycle_status_check'),
+  ('series_freshness_current_pkey'),
   ('series_freshness_current_record_kind_check'),('series_freshness_current_series_key_check'),
   ('series_freshness_current_state_check'),('series_freshness_current_observation_check'),
   ('series_freshness_current_age_check'),('series_freshness_current_interval_check'),
@@ -169,6 +175,13 @@ checks AS (
             AND ((record_kind='telemetry' AND expected_interval_seconds=900 AND metric_code IS NULL AND event_type IS NULL)
               OR (record_kind='event' AND expected_interval_seconds=3600 AND event_type='heartbeat' AND metric_code IS NULL)
               OR (record_kind='source' AND expected_interval_seconds=300 AND metric_code IS NULL AND event_type IS NULL)))::text
+  UNION ALL SELECT 17, 'data gap lifecycle trigger installed', '1',
+         (SELECT count(*) FROM pg_trigger t JOIN pg_class r ON r.oid=t.tgrelid
+          JOIN pg_namespace n ON n.oid=r.relnamespace WHERE n.nspname='public' AND r.relname='data_gaps'
+            AND t.tgname='trg_data_gaps_lifecycle' AND NOT t.tgisinternal)::text
+  UNION ALL SELECT 18, 'data gap lifecycle trigger function installed', '1',
+         (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+          WHERE n.nspname='public' AND p.proname='enforce_data_gap_lifecycle')::text
 )
 SELECT n, check_name, expected, actual,
        CASE WHEN expected LIKE '>=%' THEN CASE WHEN actual::int >= substr(expected,3)::int THEN 'OK' ELSE 'FAIL' END
