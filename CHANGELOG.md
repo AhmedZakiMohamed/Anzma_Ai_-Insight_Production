@@ -14,6 +14,7 @@ All notable changes to Anzma AI Insight Core are recorded here. This file is mai
 - Environment-configured bearer authentication for normal REST and Socket.IO access, with an eight-hour HttpOnly browser session cookie; ingestion source-key authentication remains separate.
 - Loopback-only default host bindings for PostgreSQL and Ollama.
 - API snapshot comparison with a documented `1e-12` numeric tolerance and exact comparison for nonnumeric fields.
+- Authenticated, read-only E5 endpoints for series freshness, source liveness, and gap history, plus one dashboard evidence panel; existing KPI, alert, equipment-health, and chat contracts remain unchanged.
 
 ### Fixed
 

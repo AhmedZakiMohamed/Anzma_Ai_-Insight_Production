@@ -319,3 +319,25 @@ class Validator(Protocol):
 2. `scenario` parameter semantics. `[TBD]`
 3. Keep `asset_name` as an alternative to `asset_id` in ingestion. `[TBD]`
 4. Whether unprefixed aliases stay on Day 2. `[TBD]`
+
+## E5. Implemented read-only freshness API
+
+This section documents the current E5 routes; it supersedes no ingestion behavior. The versioned ingestion contract remains [`INGESTION_CONTRACT.md`](INGESTION_CONTRACT.md). These routes are read-only, require the operator bearer token or authenticated session cookie, and do not accept source ingestion keys. They return UTC timestamps ending in `Z`, use codes instead of database IDs, and do not change existing dashboard, KPI, alert, equipment-health, or chat response shapes.
+
+All list routes accept `limit` (default 100, valid 1–500) and `offset` (default 0, non-negative). Responses include `total` and `next_offset` (`null` at the end). Missing/invalid operator credentials return HTTP 401; source ingestion keys are not accepted. Invalid enum filters, limits, offsets, or timestamps return HTTP 400. An unknown code filter is valid and returns an empty list. Database errors return HTTP 503. Non-GET methods are not defined for these routes.
+
+### GET `/api/v1/freshness`
+
+Filters: `building_code`, `source_code`, `asset_code`, `metric_code`, and `state` (`FRESH`, `STALE`, `MISSING`, `UNKNOWN`). Retired and disabled assets are excluded. The response includes `evaluated_at`, integer `evaluation_age_seconds`, `snapshot_stale`, `state_counts`, paging fields, and `items`. Each item contains building/source/asset codes, `record_kind`, metric/event code, freshness state, `last_observed_at`, `last_received_at`, `age_seconds`, expected interval, evaluation timestamp, and nullable `open_gap` evidence.
+
+An absent evaluation returns null evaluation time/age, an empty item list when there are no current rows, and `snapshot_stale: true`. `ANZMA_FRESHNESS_SNAPSHOT_MAX_AGE` defaults to 180 seconds. A valid positive integer overrides it; invalid or non-positive values log one warning and use 180 seconds.
+
+### GET `/api/v1/sources/liveness`
+
+Filters: `building_code`, `source_code`, and `state` (`ALIVE`, `SILENT`, `UNKNOWN`, `DISABLED`). Each item contains source/building codes, state and reason, last-received time and age, expected keepalive interval, active/stale/missing series counts, mass-stale flag, and separate `last_success_at`, `last_error_at`, `last_error`, and `connector_status` evidence. Receipt and quality evidence do not get folded together: an all-rejected batch can keep liveness `ALIVE` while success/error fields show rejection. `last_error` is capped at 500 characters and `last_error_truncated` reports truncation. `connector_status` is serialized and bounded to 8 KiB; if it is malformed or larger, the field is null and `connector_status_omitted` is true. Consumers must treat it as untrusted diagnostic JSON.
+
+### GET `/api/v1/data-gaps`
+
+Filters: `status` (`open`, `closed`, `all`; default `open`), `cause` (`UNKNOWN`, `NO_DATA`, `SOURCE_SUSPECTED`), `building_code`, `source_code`, `asset_code`, and `since` (RFC 3339 timestamp with timezone; selects `detected_at >= since`). The top-level response echoes the selected status. Each item contains public codes, series type, gap boundaries, detection/closure times, expected interval, `opened_in_work_hours`, cause and update time, and ordered cause history (`old_cause`, `new_cause`, `changed_at`). Database gap IDs are not returned. Closed-gap causes and boundaries are presented as persisted historical evidence.
+
+The dashboard has one additive **Data freshness & sources** panel. It reads these three routes when the existing Refresh action runs. It displays UTC timestamps, marks stale snapshots, escapes all dynamic text, and presents source/gap classifications as evidence rather than confirmed equipment faults. No polling loop, AI/chat integration, equipment-state change, or alert behavior is added by E5.

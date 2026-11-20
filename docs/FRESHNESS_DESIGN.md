@@ -78,11 +78,15 @@ The seed has no timezone values and the customer's likely zone is unknown, so a 
 
 For zero behavior change in the current demo, compare old alert output against the later building-schedule alert logic with `Etc/GMT-2`, 08:00–18:00, all seven days, and compare golden alert IDs, `after_hours` facts, regime labels, and evidence for the same UTC records. Include the seed's stored `details.after_hours` behavior for CCTV motion. Require zero differences for this parity configuration; separately test a selected DST zone. Do not alter KPI `no_data` or hourly heartbeat-compliance calculations as part of this work.
 
-## 6. API, dashboard, and AI exposure (design only)
+## 6. E5 read-only API and dashboard exposure
 
-Proposal: add authenticated operator read endpoint `GET /api/v1/freshness` with optional `building_code`, `source_code`, `asset_code`, `metric_code`, and `state` filters. Return `{evaluated_at, timezone, source_liveness, items:[{asset_code, metric_code, freshness, last_observed_at, last_received_at, age_seconds, expected_interval_seconds, open_gap}]}`. Add `GET /api/v1/data-gaps` for paginated open/recent gaps and their closure evidence. Use the existing operator API authentication dependency (`require_api_auth` in [`security.py`](../app/security.py#L89)); do not accept ingestion source keys for these endpoints.
+**Implemented in E5:** the authenticated operator API exposes `GET /api/v1/freshness`, `GET /api/v1/sources/liveness`, and `GET /api/v1/data-gaps`. The source route is separate so its filters and offsets remain independently paginated. All three use the existing operator bearer/session authentication in [`main.py`](../app/main.py) and [`security.py`](../app/security.py); ingestion source keys do not grant operator access. Contract shapes, filter behavior, limits, and error statuses are documented in [`API_CONTRACT.md`](API_CONTRACT.md#e5-implemented-read-only-freshness-api).
 
-Keep existing dashboard/KPI/alert response fields and meanings unchanged. A later UI may consume these new endpoints or add optional `freshness` fields to equipment-health responses; deploy additively and retain the old `no_data` semantics until separately approved. AI/chat should use freshness only as a cited, timestamped Core fact from the new read model; it must not infer faults or replace stored alert evidence. Local time display must state its IANA zone while UTC remains the stored/API canonical value. These shapes and consumer choices remain proposals.
+The endpoints read the E3/E4 current-state and gap-history tables. They return public building/source/asset/metric codes, never database identity values. Times are emitted as UTC strings ending in `Z`; the API does not convert them to building-local time. The snapshot metadata reports the newest persisted evaluation, its age, and `snapshot_stale`; the default maximum age is 180 seconds, configurable through `ANZMA_FRESHNESS_SNAPSHOT_MAX_AGE`. An empty snapshot is explicitly stale. `NOT_APPLICABLE` remains implicit as the absence of a persisted series row.
+
+The dashboard adds one `Data freshness & sources` panel and refreshes it with the existing Refresh action. It shows freshness counts/rows, source liveness and separate diagnostic evidence, plus open gaps. It does not alter existing KPI, alert, equipment-health, or dashboard endpoint response shapes. Source `SILENT` and gap `SOURCE_SUSPECTED` are evidence, not a confirmed equipment outage. The panel escapes dynamic values, displays canonical UTC timestamps, and omits oversized or invalid `connector_status` JSON; API reads cap its serialized size at 8 KiB. No polling loop was added. Since the panel emits no local timestamps, the building timezone fallback is not applied or returned by these endpoints.
+
+AI/chat remains unchanged and does not consume these freshness endpoints. **Proposal for items 1.4/1.7:** a later approved change could expose freshness only as a cited, timestamped Core fact to chat/explanations, without inferring faults or replacing alert evidence. The E5 API and panel do not change the legacy `no_data` semantics, alert logic, equipment state, or the hardcoded alert time assumptions from ISS-008. The E6 timezone/parity work remains outstanding.
 
 ## 7. Test and performance plan
 
@@ -97,8 +101,8 @@ Keep existing dashboard/KPI/alert response fields and meanings unchanged. A late
 1. **E2 — additive schema, defaults, and provisioning** (≤10 files per implementation commit): migration 009 for building schedules, expectation/gap/current tables and constraints; validated admin CLI; schema and existing-volume migration verification on a disposable copy. Complete with this package.
 2. **E3 — evaluator and job** (≤10 files): interval resolution, UTC freshness evaluation, idempotent gap and current-state writes, injected-clock unit and disposable-DB tests. Depends on E2.
 3. **E4a — data-gap lifecycle**: implemented in migrations 010 and the freshness job; tests preserve immutable gap boundaries and evidence-only semantics.
-4. **E4b — source liveness and gap causes**: implemented in migration 011 and the freshness job; authenticated freshness/gap read APIs remain E5 or a separately approved package. E4b does not change Core equipment state.
-5. **E5 — consumers and rollout parity** (≤10 files): optional dashboard/chat freshness exposure and building-timezone replacement in existing alert-hour logic; freshness itself generates no alerts. Replace hardcoded alert time logic only after the zero-difference fixed-offset parity test, then run selected-zone DST and performance checks. Depends on E2–E4 and explicit approval of the timezone/schedule.
+4. **E4b — source liveness and gap causes**: implemented in migration 011 and the freshness job; E4b itself added no HTTP API. E5 subsequently exposed these persisted records through authenticated read routes. E4b does not change Core equipment state.
+5. **E5 — read-only freshness API and dashboard panel**: implemented in `app/api/freshness_api.py` and the dashboard; tests cover authenticated reads, filtering, paging, persisted gap history, snapshot age, diagnostics bounds, and safe UI rendering. Chat/AI exposure and replacement of ISS-008 alert-hour constants remain separate future work and require their own approved scope.
 
 ## 9. Decisions needed from the human
 
@@ -130,7 +134,7 @@ Keep existing dashboard/KPI/alert response fields and meanings unchanged. A late
 
 ## 10. Limitations to carry into the Phase 1 list
 
-- The evaluator/job is CLI-only; E4b source snapshots have no read API or dashboard exposure until E5, and Compose scheduling remains unimplemented.
+- E5 exposes the persisted evaluator snapshots through read-only operator APIs and one dashboard panel. The evaluator/job remains CLI-only; Compose scheduling is unimplemented, so API snapshots can become stale and are labelled accordingly.
 - `NOT_APPLICABLE` has no persisted row; E4 must derive it from absence. Gap splitting/repair after backfill is not implemented.
 - No ≥1M-row performance result is claimed; query plans and measured indexes are required before adding indexes.
 - `data_sources` timestamps describe batch receipt/success/error, not per-asset reporting cadence; `connector_status` is opaque JSON diagnostics.
