@@ -172,10 +172,11 @@
       margin: 8px 0;
     }
 
-    .freshness-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
-    .freshness-scroll { overflow-x: auto; }
-    .freshness-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    .freshness-table th, .freshness-table td { padding: 7px 9px; border-bottom: 1px solid var(--line, #e3e6ea); text-align: left; }
+    .freshness-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 14px; }
+    .freshness-grid > div { min-width: 0; }
+    .freshness-scroll { max-width: 100%; min-width: 0; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .freshness-table { width: max-content; min-width: 100%; border-collapse: collapse; font-size: 13px; }
+    .freshness-table th, .freshness-table td { padding: 7px 9px; border-bottom: 1px solid var(--line, #e3e6ea); text-align: left; white-space: nowrap; }
     .freshness-note { color: var(--muted, #667085); font-size: 13px; }
     #freshnessStaleBanner { padding: 9px 12px; border-radius: 7px; background: #fff2d7; color: #704b00; }
     .liveness-card { border: 1px solid var(--line, #e3e6ea); border-radius: 8px; padding: 10px; margin: 0 0 9px; }
@@ -252,6 +253,7 @@
 
     <section id="freshnessPanel" class="panel" aria-labelledby="freshnessTitle">
       <h3 id="freshnessTitle">Data freshness &amp; sources</h3>
+      <p class="freshness-note">Seed/legacy series have no source or building code; the rest of the dashboard measures time from the latest stored record, this panel from the current clock.</p>
       <p id="freshnessSnapshot" class="freshness-note">Loading persisted freshness snapshot…</p>
       <div id="freshnessStaleBanner" role="status" hidden>Snapshot is stale or unavailable; these values are the last persisted evaluation.</div>
       <p id="freshnessEvidenceNote" class="freshness-note">Source SILENT and gap SOURCE_SUSPECTED labels are evidence; they do not confirm an equipment outage.</p>
@@ -940,6 +942,11 @@
       return value ? `${esc(value)} UTC` : "—";
     }
 
+    function codeValue(value) {
+      const normalized = value == null ? "" : String(value).trim();
+      return esc(normalized || "—");
+    }
+
     async function loadFreshness() {
       try {
         const [freshness, liveness, gaps] = await Promise.all([
@@ -954,13 +961,13 @@
         $("freshnessCounts").innerHTML = Object.entries(freshness.state_counts || {}).map(([stateName, count]) =>
           `<span class="tag">${esc(stateName)}: ${esc(count)}</span>`).join("");
         $("freshnessRows").innerHTML = (freshness.items || []).map(item =>
-          `<tr><td>${esc(item.building_code)}</td><td>${esc(item.source_code)}</td><td>${esc(item.asset_code)}</td>` +
+          `<tr><td>${codeValue(item.building_code)}</td><td>${codeValue(item.source_code)}</td><td>${codeValue(item.asset_code)}</td>` +
           `<td>${esc(item.metric_code || item.event_type || item.record_kind)}</td><td>${esc(item.freshness)}</td>` +
           `<td>${utcValue(item.last_observed_at)}</td></tr>`).join("") || '<tr><td colspan="6">No persisted series snapshot.</td></tr>';
         const livenessStates = new Set(["ALIVE", "SILENT", "UNKNOWN", "DISABLED"]);
         $("livenessCards").innerHTML = (liveness.items || []).map(source => {
           const stateName = livenessStates.has(source.state) ? source.state : "UNKNOWN";
-          return `<article class="liveness-card"><strong>${esc(source.building_code)} · ${esc(source.source_code)}</strong> ` +
+          return `<article class="liveness-card"><strong>${codeValue(source.building_code)} · ${codeValue(source.source_code)}</strong> ` +
             `<span class="tag state-${esc(stateName.toLowerCase())}">${esc(stateName)}</span>` +
             `<p>Reason: ${esc(source.reason_code)} · ${esc(source.reason_message)}</p>` +
             `<p>Last received: ${utcValue(source.last_received_at)} · Expected interval: ${esc(source.expected_interval_seconds ?? "—")} s</p>` +
@@ -969,9 +976,9 @@
             `<p>Evidence — last success: ${utcValue(source.last_success_at)} · last error at: ${utcValue(source.last_error_at)}</p>` +
             `<p>Evidence — last error: ${esc(source.last_error || "—")}${source.connector_status_omitted ? " (diagnostics omitted: size limit)" : ""}</p>` +
             `<p>Evidence — connector diagnostics: ${esc(source.connector_status ? JSON.stringify(source.connector_status) : "—")}</p></article>`;
-        }).join("") || "<p>No persisted source snapshot.</p>";
+        }).join("") || "<p>No ingestion sources registered yet — legacy/seed data has none</p>";
         $("dataGapRows").innerHTML = (gaps.items || []).map(gap =>
-          `<tr><td>${esc(gap.building_code)}</td><td>${esc(gap.source_code)}</td><td>${esc(gap.asset_code)}</td>` +
+          `<tr><td>${codeValue(gap.building_code)}</td><td>${codeValue(gap.source_code)}</td><td>${codeValue(gap.asset_code)}</td>` +
           `<td>${esc(gap.metric_code || gap.event_type || gap.record_kind)}</td><td><span class="tag">${esc(gap.cause)}</span></td>` +
           `<td>${utcValue(gap.gap_start)}</td></tr>`).join("") || '<tr><td colspan="6">No open data gaps.</td></tr>';
       } catch (error) {
