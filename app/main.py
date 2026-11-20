@@ -324,9 +324,10 @@ def ask(request: AskRequest) -> dict[str, Any]:
 # ======================================================================================================
 # Dashboard page, assistant widget, detection and live alerts
 # ======================================================================================================
-from app.api import chat_lite, frontend_api  # noqa: E402
+from app.api import chat_lite, frontend_api, freshness_api  # noqa: E402
 
 api.include_router(frontend_api.create_router())
+api.include_router(freshness_api.create_router())
 api.include_router(chat_lite.create_router(
     day2_connect, pipeline, inc, use_llm_default=os.getenv("CHAT_USE_LLM", "true").lower() == "true",
     db_errors=DB_ERRORS))
