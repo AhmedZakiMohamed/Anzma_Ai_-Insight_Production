@@ -171,6 +171,18 @@
       padding: 8px 10px;
       margin: 8px 0;
     }
+
+    .freshness-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+    .freshness-scroll { overflow-x: auto; }
+    .freshness-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .freshness-table th, .freshness-table td { padding: 7px 9px; border-bottom: 1px solid var(--line, #e3e6ea); text-align: left; }
+    .freshness-note { color: var(--muted, #667085); font-size: 13px; }
+    #freshnessStaleBanner { padding: 9px 12px; border-radius: 7px; background: #fff2d7; color: #704b00; }
+    .liveness-card { border: 1px solid var(--line, #e3e6ea); border-radius: 8px; padding: 10px; margin: 0 0 9px; }
+    .liveness-card p { margin: 5px 0; font-size: 12px; overflow-wrap: anywhere; }
+    .tag.state-alive { background: #e3f4ea; color: #1e6b3f; }
+    .tag.state-silent { background: #fff2d7; color: #704b00; }
+    .tag.state-unknown, .tag.state-disabled { background: #eef0f3; color: #475467; }
   </style>
 </head>
 
@@ -236,6 +248,32 @@
         <button id="incRun" type="button">Run detection</button>
       </p>
       <div id="incDetail" class="inc-detail" hidden></div>
+    </section>
+
+    <section id="freshnessPanel" class="panel" aria-labelledby="freshnessTitle">
+      <h3 id="freshnessTitle">Data freshness &amp; sources</h3>
+      <p id="freshnessSnapshot" class="freshness-note">Loading persisted freshness snapshot…</p>
+      <div id="freshnessStaleBanner" role="status" hidden>Snapshot is stale or unavailable; these values are the last persisted evaluation.</div>
+      <p id="freshnessEvidenceNote" class="freshness-note">Source SILENT and gap SOURCE_SUSPECTED labels are evidence; they do not confirm an equipment outage.</p>
+      <div class="freshness-grid">
+        <div>
+          <h4>Series freshness</h4>
+          <div id="freshnessCounts" aria-live="polite"></div>
+          <div class="freshness-scroll">
+            <table class="freshness-table"><thead><tr><th>Building</th><th>Source</th><th>Asset</th><th>Metric</th><th>State</th><th>Last observed (UTC)</th></tr></thead>
+              <tbody id="freshnessRows"></tbody></table>
+          </div>
+        </div>
+        <div>
+          <h4>Source liveness</h4>
+          <div id="livenessCards" aria-live="polite"></div>
+        </div>
+      </div>
+      <h4>Open data gaps</h4>
+      <div class="freshness-scroll">
+        <table class="freshness-table"><thead><tr><th>Building</th><th>Source</th><th>Asset</th><th>Metric</th><th>Cause</th><th>Gap start (UTC)</th></tr></thead>
+          <tbody id="dataGapRows"></tbody></table>
+      </div>
     </section>
 
     <h2>System status</h2>
@@ -420,9 +458,8 @@
         query.set("system_type", state.system);
       }
 
-      const response = await fetch(
-        `/dashboard/${path}?${query}`
-      );
+      const url = path.startsWith("/") ? path : `/dashboard/${path}?${query}`;
+      const response = await fetch(url);
 
       if (!response.ok) {
         throw new Error(`${path}: HTTP ${response.status}`);
@@ -881,6 +918,9 @@
 
         drawHealth(health);
 
+        // Freshness is an additive read-only panel; its failure does not block existing dashboard data.
+        void loadFreshness();
+
       } catch (error) {
 
         if (requestId !== dashboardRequestId) {
@@ -893,6 +933,54 @@
           `Could not load dashboard data (${error.message}). Check that the API and the database are running and that the database contains data.`;
 
         $("msg").style.display = "block";
+      }
+    }
+
+    function utcValue(value) {
+      return value ? `${esc(value)} UTC` : "—";
+    }
+
+    async function loadFreshness() {
+      try {
+        const [freshness, liveness, gaps] = await Promise.all([
+          api("/api/v1/freshness?limit=100"),
+          api("/api/v1/sources/liveness?limit=100"),
+          api("/api/v1/data-gaps?status=open&limit=100")
+        ]);
+        const stamp = freshness.evaluated_at ? `${esc(freshness.evaluated_at)} UTC` : "no persisted evaluation";
+        const age = freshness.evaluation_age_seconds === null ? "age unknown" : `${esc(freshness.evaluation_age_seconds)} seconds old`;
+        $("freshnessSnapshot").textContent = `Snapshot: ${freshness.snapshot_stale ? "STALE" : "current"} · ${stamp} · ${age}`;
+        $("freshnessStaleBanner").hidden = !freshness.snapshot_stale;
+        $("freshnessCounts").innerHTML = Object.entries(freshness.state_counts || {}).map(([stateName, count]) =>
+          `<span class="tag">${esc(stateName)}: ${esc(count)}</span>`).join("");
+        $("freshnessRows").innerHTML = (freshness.items || []).map(item =>
+          `<tr><td>${esc(item.building_code)}</td><td>${esc(item.source_code)}</td><td>${esc(item.asset_code)}</td>` +
+          `<td>${esc(item.metric_code || item.event_type || item.record_kind)}</td><td>${esc(item.freshness)}</td>` +
+          `<td>${utcValue(item.last_observed_at)}</td></tr>`).join("") || '<tr><td colspan="6">No persisted series snapshot.</td></tr>';
+        const livenessStates = new Set(["ALIVE", "SILENT", "UNKNOWN", "DISABLED"]);
+        $("livenessCards").innerHTML = (liveness.items || []).map(source => {
+          const stateName = livenessStates.has(source.state) ? source.state : "UNKNOWN";
+          return `<article class="liveness-card"><strong>${esc(source.building_code)} · ${esc(source.source_code)}</strong> ` +
+            `<span class="tag state-${esc(stateName.toLowerCase())}">${esc(stateName)}</span>` +
+            `<p>Reason: ${esc(source.reason_code)} · ${esc(source.reason_message)}</p>` +
+            `<p>Last received: ${utcValue(source.last_received_at)} · Expected interval: ${esc(source.expected_interval_seconds ?? "—")} s</p>` +
+            `<p>Series: ${esc(source.active_series_count)} active, ${esc(source.stale_series_count)} stale, ${esc(source.missing_series_count)} missing · ` +
+            `Mass-stale: ${esc(source.mass_stale ? "yes" : "no")}</p>` +
+            `<p>Evidence — last success: ${utcValue(source.last_success_at)} · last error at: ${utcValue(source.last_error_at)}</p>` +
+            `<p>Evidence — last error: ${esc(source.last_error || "—")}${source.connector_status_omitted ? " (diagnostics omitted: size limit)" : ""}</p>` +
+            `<p>Evidence — connector diagnostics: ${esc(source.connector_status ? JSON.stringify(source.connector_status) : "—")}</p></article>`;
+        }).join("") || "<p>No persisted source snapshot.</p>";
+        $("dataGapRows").innerHTML = (gaps.items || []).map(gap =>
+          `<tr><td>${esc(gap.building_code)}</td><td>${esc(gap.source_code)}</td><td>${esc(gap.asset_code)}</td>` +
+          `<td>${esc(gap.metric_code || gap.event_type || gap.record_kind)}</td><td><span class="tag">${esc(gap.cause)}</span></td>` +
+          `<td>${utcValue(gap.gap_start)}</td></tr>`).join("") || '<tr><td colspan="6">No open data gaps.</td></tr>';
+      } catch (error) {
+        console.error("Freshness panel loading error:", error);
+        $("freshnessSnapshot").textContent = "Freshness data is temporarily unavailable. Use Refresh to try again.";
+        $("freshnessRows").textContent = "";
+        $("livenessCards").textContent = "";
+        $("dataGapRows").textContent = "";
+        $("freshnessStaleBanner").hidden = false;
       }
     }
 

@@ -109,6 +109,15 @@ class FreshnessApiTests(unittest.TestCase):
                 (self.sources[si], state, self.now, self.now, self.now - timedelta(hours=1), self.now,
                  "METRIC_NOT_COMPATIBLE: rejected sample", json.dumps(status)),
             )
+            if si == 0:
+                self.db.execute(
+                    """INSERT INTO ingestion_batches(source_id,batch_id,contract_version,payload_sha256,received_at,
+                               sent_at,connector_name,connector_version,received_count,accepted_count,duplicate_count,
+                               rejected_count,response_payload,connector_status)
+                       VALUES (%s,%s,'v1',%s,%s,%s,'e5-test','1',1,0,0,1,'{}'::jsonb,%s::jsonb)""",
+                    (self.sources[si], uuid4(), hashlib.sha256(self.suffix.encode()).hexdigest(), self.now,
+                     self.now, json.dumps(status)),
+                )
         self.open_gap_id = self._gap(self.assets[1], self.sources[1], self.now - timedelta(hours=2), None)
         self.closed_gap_id = self._gap(self.assets[2], self.sources[2], self.now - timedelta(hours=3),
                                        self.now - timedelta(hours=1))
@@ -136,6 +145,7 @@ class FreshnessApiTests(unittest.TestCase):
         self.db.execute("DELETE FROM data_gaps WHERE asset_id=ANY(%s)", (self.assets,))
         self.db.execute("DELETE FROM series_freshness_current WHERE asset_id=ANY(%s)", (self.assets,))
         self.db.execute("DELETE FROM source_liveness_current WHERE source_id=ANY(%s)", (self.sources,))
+        self.db.execute("DELETE FROM ingestion_batches WHERE source_id=ANY(%s)", (self.sources,))
         self.db.execute("DELETE FROM reporting_expectations WHERE expectation_id=ANY(%s)", (self.expectations,))
         self.db.execute("DELETE FROM assets WHERE asset_id=ANY(%s)", (self.assets,))
         self.db.execute("DELETE FROM data_sources WHERE source_id=ANY(%s)", (self.sources,))
@@ -144,6 +154,15 @@ class FreshnessApiTests(unittest.TestCase):
 
     def auth(self, token=TOKEN):
         return {"Authorization": f"Bearer {token}"} if token is not None else {}
+
+    def assert_no_internal_ids(self, value):
+        if isinstance(value, dict):
+            self.assertFalse(any(key.endswith("_id") for key in value))
+            for child in value.values():
+                self.assert_no_internal_ids(child)
+        elif isinstance(value, list):
+            for child in value:
+                self.assert_no_internal_ids(child)
 
     def test_operator_auth_all_routes_and_source_key_is_not_operator_auth(self):
         paths = ("/api/v1/freshness", "/api/v1/data-gaps", "/api/v1/sources/liveness")
@@ -158,9 +177,15 @@ class FreshnessApiTests(unittest.TestCase):
         response = self.client.get(path, params={"building_code": f"E5B-{self.suffix}-0", "limit": 1}, headers=self.auth())
         self.assertEqual(response.status_code, 200, response.text)
         data = response.json()
+        self.assert_no_internal_ids(data)
+        self.assertTrue({"evaluated_at", "evaluation_age_seconds", "snapshot_stale", "state_counts", "items",
+                         "limit", "offset", "total", "next_offset"}.issubset(data))
         self.assertEqual((data["total"], data["limit"], data["offset"]), (2, 1, 0))
         self.assertEqual(data["next_offset"], 1)
         self.assertEqual(len(data["items"]), 1)
+        self.assertTrue({"building_code", "source_code", "asset_code", "record_kind", "metric_code", "freshness",
+                         "last_observed_at", "last_received_at", "age_seconds", "expected_interval_seconds",
+                         "evaluated_at", "open_gap"}.issubset(data["items"][0]))
         self.assertNotIn("asset_id", json.dumps(data).lower())
         self.assertNotIn("source_id", json.dumps(data).lower())
         second = self.client.get(path, params={"building_code": f"E5B-{self.suffix}-0", "limit": 1, "offset": 1}, headers=self.auth()).json()
@@ -174,6 +199,11 @@ class FreshnessApiTests(unittest.TestCase):
             result = self.client.get(path, params=params, headers=self.auth())
             self.assertEqual(result.status_code, 200, result.text)
             self.assertEqual(result.json()["total"], expected)
+        combined = self.client.get(path, params={"building_code": f"E5B-{self.suffix}-0",
+            "source_code": f"E5S-{self.suffix}-1", "asset_code": f"E5A-{self.suffix}-1",
+            "metric_code": "temperature", "state": "MISSING"}, headers=self.auth())
+        self.assertEqual(combined.status_code, 200)
+        self.assertEqual(combined.json()["total"], 1)
         self.assertEqual(self.client.get(path, params={"state": "NOT_A_STATE"}, headers=self.auth()).status_code, 400)
         self.assertEqual(self.client.get(path, params={"limit": 501}, headers=self.auth()).status_code, 400)
 
@@ -182,12 +212,17 @@ class FreshnessApiTests(unittest.TestCase):
         response = self.client.get(path, params={"building_code": f"E5B-{self.suffix}-0"}, headers=self.auth())
         self.assertEqual(response.status_code, 200, response.text)
         items = {row["source_code"]: row for row in response.json()["items"]}
+        self.assert_no_internal_ids(response.json())
         self.assertEqual(len(items), 2)
         first = items[f"E5S-{self.suffix}-0"]
         self.assertEqual(first["state"], "ALIVE")
         self.assertTrue(first["last_success_at"].endswith("Z"))
         self.assertTrue(first["last_error_at"].endswith("Z"))
         self.assertEqual(first["last_error"], "METRIC_NOT_COMPATIBLE: rejected sample")
+        self.assertLess(first["last_success_at"], first["last_received_at"],
+                        "the all-rejected batch records receipt but leaves success stale")
+        self.assertTrue({"reason_code", "reason_message", "active_series_count", "stale_series_count",
+                         "missing_series_count", "mass_stale", "connector_status"}.issubset(first))
         hostile = items[f"E5S-{self.suffix}-1"]["connector_status"]
         self.assertEqual(hostile["html"], "<script>alert(1)</script>")
         big = self.client.get(path, params={"source_code": f"E5S-{self.suffix}-2"}, headers=self.auth()).json()["items"][0]
@@ -202,13 +237,26 @@ class FreshnessApiTests(unittest.TestCase):
         path = "/api/v1/data-gaps"
         opened = self.client.get(path, params={"status": "open", "source_code": f"E5S-{self.suffix}-1"}, headers=self.auth())
         self.assertEqual(opened.status_code, 200, opened.text)
+        self.assert_no_internal_ids(opened.json())
         self.assertEqual(opened.json()["total"], 1)
         gap = opened.json()["items"][0]
+        self.assertTrue({"gap_start", "gap_end", "detected_at", "expected_interval_seconds",
+                         "opened_in_work_hours", "cause", "cause_updated_at", "cause_history"}.issubset(gap))
         self.assertEqual(gap["cause"], "SOURCE_SUSPECTED")
         self.assertEqual([h["new_cause"] for h in gap["cause_history"]], ["NO_DATA", "SOURCE_SUSPECTED"])
         self.assertTrue(gap["gap_start"].endswith("Z"))
         self.assertEqual(self.client.get(path, params={"status": "closed"}, headers=self.auth()).json()["total"], 1)
         self.assertEqual(self.client.get(path, params={"cause": "UNKNOWN"}, headers=self.auth()).json()["total"], 0)
+        for params, expected in (({"building_code": f"E5B-{self.suffix}-0"}, 1),
+                                 ({"asset_code": f"E5A-{self.suffix}-1"}, 1),
+                                 ({"cause": "SOURCE_SUSPECTED"}, 1),
+                                 ({"status": "all", "since": (self.now - timedelta(days=1)).isoformat()}, 2),
+                                 ({"status": "all", "building_code": f"E5B-{self.suffix}-1",
+                                   "source_code": f"E5S-{self.suffix}-2", "asset_code": f"E5A-{self.suffix}-2",
+                                   "cause": "UNKNOWN"}, 1)):
+            result = self.client.get(path, params=params, headers=self.auth())
+            self.assertEqual(result.status_code, 200, result.text)
+            self.assertEqual(result.json()["total"], expected)
         self.assertEqual(self.client.get(path, params={"since": "not-a-time"}, headers=self.auth()).status_code, 400)
         self.assertEqual(self.client.get(path, params={"status": "bad"}, headers=self.auth()).status_code, 400)
 
@@ -220,7 +268,8 @@ class FreshnessApiTests(unittest.TestCase):
         self.assertNotIn(f"E5A-{self.suffix}-4", {item["asset_code"] for item in response.json()["items"]})
         self.assertIn(response.json()["state_counts"]["STALE"], (0, 1))
         self.assertIn("evaluation_age_seconds", response.json())
-        self.assertEqual(self.client.post("/api/v1/freshness", headers=self.auth()).status_code, 405)
+        for path in ("/api/v1/freshness", "/api/v1/data-gaps", "/api/v1/sources/liveness"):
+            self.assertEqual(self.client.post(path, headers=self.auth()).status_code, 405)
         before = self._hashes()
         self.client.get("/api/v1/freshness", headers=self.auth())
         self.client.get("/api/v1/sources/liveness", headers=self.auth())
