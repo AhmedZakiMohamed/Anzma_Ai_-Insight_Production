@@ -1,6 +1,6 @@
 # Reference Simulator Connector — design proposal
 
-**Phase 1 item 1.2. Decision: APPROVED (recommendations accepted), 2026-11-20.** D2 implements the accepted recommendations in this note. D3 remains separate and is not authorized by this package.
+**Phase 1 item 1.2. Decision: APPROVED (recommendations accepted), 2026-11-20.** D2 and D3 Parts 1–3 are implemented. D3 Part 4 (isolated real-Core verification) is **NOT TESTED** because Docker/Core was unavailable; deployment integration remains separate.
 
 ## 1. Purpose and boundary
 
@@ -121,13 +121,13 @@ These are design comparisons, not behavior already implemented in the repository
 | Append-only JSONL + `fsync` | One writer can append sequence-ordered records; a record is not durable until flush + fsync. A torn final line needs explicit recovery rules. | Detect/truncate only a proven incomplete tail; malformed interior data should quarantine and stop, not skip. Concurrent writers and state updates are harder. | Cap file bytes; rotation/compaction must preserve order and durable state. On full, block acquisition and persist/report any loss counter separately. |
 | One file per batch | Write a temporary file, fsync, atomically rename to a sequence-named ready file; directory listing can drain in order. | Simple isolation per batch; partial temp files can be quarantined. Must fsync the directory for rename durability and recover sequence/state consistently. Many files can complicate cleanup and corruption checks. | Cap total bytes/files. Block acquisition at cap; never remove oldest pending data silently. Report unavoidable drops in the next batch/keepalive diagnostics. |
 
-**Approved decision: SQLite outbox.** It best matches the atomic requirement to persist an immutable body, ID, sequence, and delivery state together. The accepted cap is 256 MiB per connector instance; at cap, pause simulator generation and retain pending batches rather than drop them. If an input cannot be queued despite back-pressure, persist an incremented dropped count and report it in the next accepted batch/keepalive's `source.connector_status.dropped_records`. A corrupt outbox must stop sending/acquisition and require operator action; never silently create an empty replacement. Capacity enforcement, overflow accounting, and corruption recovery are D3 work.
+**Approved decision: SQLite outbox.** It best matches the atomic requirement to persist an immutable body, ID, sequence, and delivery state together. The accepted cap is 256 MiB per connector instance; at cap, pause simulator generation and retain pending batches rather than drop them. If an input cannot be queued despite back-pressure, persist an incremented dropped count and report it in the next accepted batch/keepalive's `source.connector_status.dropped_records`. A corrupt outbox must stop sending/acquisition and require operator action; never silently create an empty replacement. D3 implements these safeguards; real-Core verification remains untested.
 
 ## 6. Retry, concurrency, and outage drain
 
 **Approved decision (D3):** one in-flight batch per source, strict oldest-sequence-first delivery, exponential backoff starting at 1 second, doubling to a 5-minute cap, with full jitter. These starting/cap values match the proposal in [`CONNECTOR_ARCHITECTURE.md`, §6](CONNECTOR_ARCHITECTURE.md#6-errors-retry-and-store-and-forward). For `429`, wait at least `Retry-After` seconds (use the larger of that delay and the jittered backoff). Reset backoff after a successful response. Keep older batches ahead of newer live data; label old observations `BACKFILL`. D2 records retryable responses as pending and exits without a retry loop.
 
-An exact retry is not a duplicate write: the source+`batch_id` and immutable payload reproduce the Core's stored transaction result. Natural-key duplicate records are reported in `counts.duplicate`; the connector marks the batch complete. `200 PARTIAL` is complete for delivery, while rejected rows are stored for review and never retried unchanged. `401`/`403`, `409`, and permanent `4xx` do not enter the retry loop. Max in-flight is one until measurements demonstrate an ordering need; if later raised, each source's committed sequence still drains oldest-first.
+An exact retry is not a duplicate write: the source+`batch_id` and immutable payload reproduce the Core's stored transaction result. Natural-key duplicate records are reported in `counts.duplicate`; the connector marks the batch complete. `200 PARTIAL` is complete for delivery, while rejected rows are stored for review and never retried unchanged. `401`/`403`, `409`, and permanent `4xx` do not enter the retry loop. D3 implements one in-flight oldest-first draining and the approved backoff; the real-Core outage proof is not run in this environment.
 
 ## 7. Configuration and secret handling
 
@@ -141,7 +141,7 @@ An exact retry is not a duplicate write: the source+`batch_id` and immutable pay
 | `ANZMA_SIMULATOR_CONNECTOR_NAME`, `ANZMA_SIMULATOR_CONNECTOR_VERSION` | Envelope identity. |
 | `ANZMA_SIMULATOR_API_KEY` **or** `ANZMA_SIMULATOR_API_KEY_FILE` | Credential source; exactly one configured. Neither is logged or included in telemetry, buffered bodies, errors, or process output. |
 | `ANZMA_SIMULATOR_SEED`, `ANZMA_SIMULATOR_SCENARIO`, `ANZMA_SIMULATOR_CLOCK_ANCHOR` | Deterministic scenario manifest. |
-| `ANZMA_SIMULATOR_INTERVAL_SECONDS`, `ANZMA_SIMULATOR_BATCH_RECORDS`, `ANZMA_SIMULATOR_BUFFER_MAX_BYTES` | Polling cadence, chunk target, and durable-buffer cap. |
+| `ANZMA_SIMULATOR_KEEPALIVE_SECONDS`, `ANZMA_SIMULATOR_BATCH_RECORDS`, `ANZMA_SIMULATOR_BUFFER_MAX_BYTES` | Keepalive cadence, chunk target, and pending-payload byte cap. |
 
 The current contract uses one rotatable API key per source, SHA-256 hash storage in Core, and multiple active credentials during rotation (§11). On `401 AUTH_INVALID` or `403 SOURCE_DISABLED`, the simulator pauses and preserves the outbox; it does not loop with the rejected key. An operator supplies the replacement key out-of-band (environment/secret file), then restarts/resumes. Pending bodies retain their original IDs and bytes. The simulator never logs the key or its full Authorization header. The operator must ensure the replacement key is for the same source and has the required telemetry/event/state scopes.
 
@@ -209,12 +209,12 @@ The split below is deliberately limited to small packages, each targeting **10 f
 4. Implement the HTTP client for the two contract endpoints, auth header redaction, one-shot response parsing, and explicit terminal handling for 4xx.
 5. Add generator golden tests and persistence-before-send/restart unit tests. Do not wire a default Compose startup.
 
-**D3 — durable-buffer hardening, retries/backoff, outage tests (≤10 files):**
+**D3 — durable-buffer hardening and retry implementation (≤10 files):**
 
-1. Add bounded-capacity and corruption-recovery policy to the outbox, with persisted `connector_status` loss/buffer diagnostics.
-2. Add single-flight FIFO drain, exponential backoff/jitter, `Retry-After`, and paused credential behavior.
-3. Add deterministic simulated HTTP failure tests, crash-restart/outage-drain integration tests, and a Core-backed 429/rate-limit test.
-4. Add optional deployment integration only after approval; keep it disabled by default. No D1/D2/D3 change is authorized by this note.
+1. Implement bounded capacity, startup corruption detection, and persisted `connector_status` loss/buffer diagnostics.
+2. Implement single-flight FIFO drain, exponential backoff/jitter, `Retry-After`, and paused credential behavior.
+3. Add deterministic mock-transport failure tests. Real outage, crash-restart, rate-limit, and rotation tests remain unverified until an isolated Core is available.
+4. Optional deployment integration remains separate and disabled by default.
 
 ## 12. Approved decisions and runtime inputs
 
@@ -225,11 +225,11 @@ The split below is deliberately limited to small packages, each targeting **10 f
 | Demo fact scope | Mirror the 15 telemetry points and hourly heartbeat/event families in the current seed; keep schema/reference catalogues. |
 | Source identity/mappings | One explicitly provisioned source per simulator instance/building; use stable source-scoped external IDs mapped by an operator. Human must supply source/building codes. |
 | Determinism | Persist a scenario manifest containing seed, scenario, clock anchor, and generator version; same manifest yields byte-identical payloads. |
-| Store | SQLite transactional outbox, initially capped at a proposed 256 MiB; pause acquisition at capacity and never drop queued batches. |
+| Store | SQLite transactional outbox, capped at 256 MiB of pending serialized payload bytes; pause acquisition at capacity and never delete queued batches. |
 | Retry | One in-flight batch, oldest-first; 1 s exponential backoff with full jitter up to 5 min; honor `Retry-After`, retry other `5xx` as transient. D3 implements this. |
 | Keepalive/status | Configurable interval based on the contract's 300 s **Proposed** value; include `connector_status` only from observable simulator state. |
 | Test scenarios | Normal by default; fault, stale/silent, bad-record, late/out-of-order, and duplicate-batch scenarios require explicit selection. |
 | Packaging | Separate Python package and non-root image; recommend an opt-in simulator profile only if deployment integration is later approved. |
 | Legacy retirement | Retire only direct demo-fact seeding after the parity gates in §9; keep schema/reference data, test fixtures, and legacy endpoints until separately approved. |
 
-Deployment-specific source/building codes and mappings remain operator configuration. D2/D3 will mirror seed event families, use the approved 256 MiB SQLite cap with pause/no-drop behavior, configurable 300-second keepalive default, retry policy in §6, fixed-clock manifest determinism, and no Compose profile or default startup. D2 deliberately excludes the storage-cap and retry implementation assigned to D3.
+Deployment-specific source/building codes and mappings remain operator configuration. D2/D3 mirror seed event families, use the 256 MiB SQLite pending-payload cap, pause without deleting queued data, persist dropped-record counts, use a configurable 300-second keepalive default and the retry policy in §6, preserve fixed-clock determinism, and do not add a Compose profile or default startup.

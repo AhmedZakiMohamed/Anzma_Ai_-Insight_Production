@@ -15,7 +15,8 @@ ENV_NAMES = {
     "ANZMA_SIMULATOR_CONFIG_FILE", "ANZMA_SIMULATOR_API_KEY", "ANZMA_SIMULATOR_API_KEY_FILE",
     "ANZMA_SIMULATOR_CORE_URL", "ANZMA_SIMULATOR_SOURCE_CODE", "ANZMA_SIMULATOR_BUILDING_CODE",
     "ANZMA_SIMULATOR_SCENARIO", "ANZMA_SIMULATOR_SEED", "ANZMA_SIMULATOR_BATCH_RECORDS",
-    "ANZMA_SIMULATOR_INTERVAL_SECONDS", "ANZMA_SIMULATOR_STATE_PATH", "ANZMA_SIMULATOR_CLOCK_ANCHOR",
+    "ANZMA_SIMULATOR_KEEPALIVE_SECONDS", "ANZMA_SIMULATOR_BUFFER_MAX_BYTES",
+    "ANZMA_SIMULATOR_STATE_PATH", "ANZMA_SIMULATOR_CLOCK_ANCHOR",
     "ANZMA_SIMULATOR_CONNECTOR_NAME", "ANZMA_SIMULATOR_CONNECTOR_VERSION",
     "ANZMA_SIMULATOR_SEED_BUILDING",
 }
@@ -36,7 +37,8 @@ class Config:
     scenario: str
     seed_building: str
     batch_records: int
-    interval_seconds: int
+    keepalive_seconds: int
+    buffer_max_bytes: int
     state_path: Path
     clock_anchor: str
     api_key: str = field(repr=False)
@@ -130,7 +132,8 @@ def load_config(env: dict[str, str] | None = None) -> Config:
         scenario=scenario,
         seed_building=seed_building,
         batch_records=integer("ANZMA_SIMULATOR_BATCH_RECORDS", "500", 1, 5000),
-        interval_seconds=integer("ANZMA_SIMULATOR_INTERVAL_SECONDS", "300", 1, 86400),
+        keepalive_seconds=integer("ANZMA_SIMULATOR_KEEPALIVE_SECONDS", "300", 10, 86400),
+        buffer_max_bytes=integer("ANZMA_SIMULATOR_BUFFER_MAX_BYTES", str(256 * 1024 * 1024), 1024, 2**40),
         state_path=state_path,
         clock_anchor=_utc_anchor(values.get("ANZMA_SIMULATOR_CLOCK_ANCHOR")),
         api_key=api_key,

@@ -47,27 +47,16 @@ class CoreClient:
             value = {}
         if not isinstance(value, dict):
             value = {}
-        if method == "GET":
-            def redact(item):
-                if isinstance(item, str):
-                    return item.replace(self._api_key, "[REDACTED]")
-                if isinstance(item, list):
-                    return [redact(child) for child in item]
-                if isinstance(item, dict):
-                    return {key: redact(child) for key, child in item.items()}
-                return item
-            return Result(status, redact(value), replay, retry_after)
-        # Do not retain or expose arbitrary response text; retain only contract fields.
-        error = value.get("error") if isinstance(value.get("error"), dict) else {}
-        counts = value.get("counts") if isinstance(value.get("counts"), dict) else {}
-        safe = {
-            "status": value.get("status") if isinstance(value.get("status"), str) else None,
-            "transaction": value.get("transaction") if isinstance(value.get("transaction"), str) else None,
-            "counts": {key: counts.get(key) for key in ("received", "accepted", "duplicate", "rejected")
-                       if isinstance(counts.get(key), int)},
-            "error": {"code": error.get("code")} if isinstance(error.get("code"), str) else {},
-        }
-        return Result(status, safe, replay, retry_after)
+        def redact(item):
+            if isinstance(item, str):
+                return item.replace(self._api_key, "[REDACTED]")
+            if isinstance(item, list):
+                return [redact(child) for child in item]
+            if isinstance(item, dict):
+                return {redact(key) if isinstance(key, str) else key: redact(child)
+                        for key, child in item.items()}
+            return item
+        return Result(status, redact(value), replay, retry_after)
 
     def post_batch(self, body: bytes) -> Result:
         return self._request("POST", "/api/v1/ingest/batches", body)
