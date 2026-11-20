@@ -1,6 +1,6 @@
 # Reference Simulator Connector — design proposal
 
-**Phase 1 item 1.2. Human decision required before implementation.** This note proposes the reference implementation for D2/D3; it creates no package or runtime behavior.
+**Phase 1 item 1.2. Decision: APPROVED (recommendations accepted), 2026-11-20.** D2 implements the accepted recommendations in this note. D3 remains separate and is not authorized by this package.
 
 ## 1. Purpose and boundary
 
@@ -47,7 +47,7 @@ For response parsing, v1 record rejection codes are `UNKNOWN_RECORD_TYPE`, `SCHE
 | `422` including `SCHEMA_INVALID`, `UNSUPPORTED_CONTRACT_VERSION`, `UNKNOWN_BUILDING`, or all records rejected | Do not blindly retry. A `422 REJECTED` means rejection audit was committed, not that the server did nothing. Preserve the response and rejected records; operator correction produces a new batch ID. |
 | `429 RATE_LIMITED` | Retry the exact body and ID no sooner than the integer `Retry-After` value. The contract marks this retryable and requires honoring the header. Ingestion limiting is per source credential, after auth; current implementation is in-memory per API process (§10.2). |
 | `503 SERVICE_UNAVAILABLE` | Retry the same body and ID with backoff. For `INGESTION_SCHEMA_NOT_APPLIED`, pause until the required migrations are applied, then retry. Network failures and timeouts also retry the same batch (§8.2, §12.4–12.5). |
-| Other `5xx` | Proposed behavior: treat as transient and retry the unchanged batch. `CONNECTOR_ARCHITECTURE.md` §6 proposes retrying `500`; the contract explicitly defines retryability for `503` and network errors but does not specify every other `5xx`. Human decision/contract clarification is needed before shipping this behavior. |
+| Other `5xx` | Approved behavior: treat as transient and retry the unchanged batch. `CONNECTOR_ARCHITECTURE.md` §6 proposes retrying `500`; the contract explicitly defines retryability for `503` and network errors but does not specify every other `5xx`. D3 implements the approved retry behavior; this implementation note does not change contract semantics. |
 
 The HTTP limiter currently defaults to 60 requests/minute and burst capacity 10 per source credential/process. The simulator should use a single in-flight request initially and let the Core's `429` plus `Retry-After` control pacing; it must not attempt to infer or probe another source's budget.
 
@@ -62,6 +62,8 @@ An empty `records: []` batch is a keepalive (§4, §8.1): it updates source live
 ### Seed-derived coverage
 
 The current synthetic catalogue and point series are in [`db/init/anzma_schema_and_seed.sql`](../db/init/anzma_schema_and_seed.sql), in the asset, metric/event catalogue, and telemetry `VALUES` sections. It defines 12 assets and these 15 telemetry points:
+
+The seed's location/building references place `HVAC-CRAC-01`, `NET-SW-02`, and `CCTV-CAM-02` in Data Center Annex; the other nine assets are in Main Tower. A simulator instance selects one seed building so its emitted source and external-ID mappings stay within the contract's one-building source scope (§4, §6). These site labels are fixture groupings from the checked-in seed, not Core `building_code` values.
 
 | Seed asset code | Simulated metrics (canonical units from the seed catalogue) |
 |---|---|
@@ -119,11 +121,11 @@ These are design comparisons, not behavior already implemented in the repository
 | Append-only JSONL + `fsync` | One writer can append sequence-ordered records; a record is not durable until flush + fsync. A torn final line needs explicit recovery rules. | Detect/truncate only a proven incomplete tail; malformed interior data should quarantine and stop, not skip. Concurrent writers and state updates are harder. | Cap file bytes; rotation/compaction must preserve order and durable state. On full, block acquisition and persist/report any loss counter separately. |
 | One file per batch | Write a temporary file, fsync, atomically rename to a sequence-named ready file; directory listing can drain in order. | Simple isolation per batch; partial temp files can be quarantined. Must fsync the directory for rename durability and recover sequence/state consistently. Many files can complicate cleanup and corruption checks. | Cap total bytes/files. Block acquisition at cap; never remove oldest pending data silently. Report unavoidable drops in the next batch/keepalive diagnostics. |
 
-**Recommendation (proposal, not decided): SQLite outbox.** It best matches the atomic requirement to persist an immutable body, ID, sequence, and delivery state together. Proposed cap: 256 MiB per connector instance; at cap, pause simulator generation and retain pending batches rather than drop them. If an input cannot be queued despite back-pressure, persist an incremented dropped count and report it in the next accepted batch/keepalive's `source.connector_status.dropped_records`. A corrupt outbox must stop sending/acquisition and require operator action; never silently create an empty replacement. The cap and recovery policy need human approval.
+**Approved decision: SQLite outbox.** It best matches the atomic requirement to persist an immutable body, ID, sequence, and delivery state together. The accepted cap is 256 MiB per connector instance; at cap, pause simulator generation and retain pending batches rather than drop them. If an input cannot be queued despite back-pressure, persist an incremented dropped count and report it in the next accepted batch/keepalive's `source.connector_status.dropped_records`. A corrupt outbox must stop sending/acquisition and require operator action; never silently create an empty replacement. Capacity enforcement, overflow accounting, and corruption recovery are D3 work.
 
 ## 6. Retry, concurrency, and outage drain
 
-**Recommendation (proposal):** one in-flight batch per source, strict oldest-sequence-first delivery, exponential backoff starting at 1 second, doubling to a 5-minute cap, with full jitter. These starting/cap values match the proposal in [`CONNECTOR_ARCHITECTURE.md`, §6](CONNECTOR_ARCHITECTURE.md#6-errors-retry-and-store-and-forward); they are not a settled service SLO. For `429`, wait at least `Retry-After` seconds (use the larger of that delay and the jittered backoff). Reset backoff after a successful response. Keep older batches ahead of newer live data; label old observations `BACKFILL`.
+**Approved decision (D3):** one in-flight batch per source, strict oldest-sequence-first delivery, exponential backoff starting at 1 second, doubling to a 5-minute cap, with full jitter. These starting/cap values match the proposal in [`CONNECTOR_ARCHITECTURE.md`, §6](CONNECTOR_ARCHITECTURE.md#6-errors-retry-and-store-and-forward). For `429`, wait at least `Retry-After` seconds (use the larger of that delay and the jittered backoff). Reset backoff after a successful response. Keep older batches ahead of newer live data; label old observations `BACKFILL`. D2 records retryable responses as pending and exits without a retry loop.
 
 An exact retry is not a duplicate write: the source+`batch_id` and immutable payload reproduce the Core's stored transaction result. Natural-key duplicate records are reported in `counts.duplicate`; the connector marks the batch complete. `200 PARTIAL` is complete for delivery, while rejected rows are stored for review and never retried unchanged. `401`/`403`, `409`, and permanent `4xx` do not enter the retry loop. Max in-flight is one until measurements demonstrate an ordering need; if later raised, each source's committed sequence still drains oldest-first.
 
@@ -135,6 +137,7 @@ An exact retry is not a duplicate write: the source+`batch_id` and immutable pay
 |---|---|
 | `ANZMA_SIMULATOR_CORE_URL` | Core base URL; require HTTPS outside local development. |
 | `ANZMA_SIMULATOR_SOURCE_CODE`, `ANZMA_SIMULATOR_BUILDING_CODE` | Provisioned source/building identifiers. |
+| `ANZMA_SIMULATOR_SEED_BUILDING` | Seed catalogue group (`main-tower` or `data-center-annex`) matching the provisioned source's building. |
 | `ANZMA_SIMULATOR_CONNECTOR_NAME`, `ANZMA_SIMULATOR_CONNECTOR_VERSION` | Envelope identity. |
 | `ANZMA_SIMULATOR_API_KEY` **or** `ANZMA_SIMULATOR_API_KEY_FILE` | Credential source; exactly one configured. Neither is logged or included in telemetry, buffered bodies, errors, or process output. |
 | `ANZMA_SIMULATOR_SEED`, `ANZMA_SIMULATOR_SCENARIO`, `ANZMA_SIMULATOR_CLOCK_ANCHOR` | Deterministic scenario manifest. |
@@ -213,20 +216,20 @@ The split below is deliberately limited to small packages, each targeting **10 f
 3. Add deterministic simulated HTTP failure tests, crash-restart/outage-drain integration tests, and a Core-backed 429/rate-limit test.
 4. Add optional deployment integration only after approval; keep it disabled by default. No D1/D2/D3 change is authorized by this note.
 
-## 12. Decisions needed from the human
+## 12. Approved decisions and runtime inputs
 
-**Decision: PENDING.** The following are proposals, not decisions:
+**Decision: APPROVED (recommendations accepted), 2026-11-20.** The choices below apply within the D2/D3 split:
 
-| Decision | Recommendation for approval |
+| Decision | Approved choice |
 |---|---|
 | Demo fact scope | Mirror the 15 telemetry points and hourly heartbeat/event families in the current seed; keep schema/reference catalogues. |
 | Source identity/mappings | One explicitly provisioned source per simulator instance/building; use stable source-scoped external IDs mapped by an operator. Human must supply source/building codes. |
 | Determinism | Persist a scenario manifest containing seed, scenario, clock anchor, and generator version; same manifest yields byte-identical payloads. |
 | Store | SQLite transactional outbox, initially capped at a proposed 256 MiB; pause acquisition at capacity and never drop queued batches. |
-| Retry | One in-flight batch, oldest-first; proposed 1 s exponential backoff with full jitter up to 5 min; honor `Retry-After`. Confirm treatment of non-503 `5xx`. |
+| Retry | One in-flight batch, oldest-first; 1 s exponential backoff with full jitter up to 5 min; honor `Retry-After`, retry other `5xx` as transient. D3 implements this. |
 | Keepalive/status | Configurable interval based on the contract's 300 s **Proposed** value; include `connector_status` only from observable simulator state. |
 | Test scenarios | Normal by default; fault, stale/silent, bad-record, late/out-of-order, and duplicate-batch scenarios require explicit selection. |
 | Packaging | Separate Python package and non-root image; recommend an opt-in simulator profile only if deployment integration is later approved. |
 | Legacy retirement | Retire only direct demo-fact seeding after the parity gates in §9; keep schema/reference data, test fixtures, and legacy endpoints until separately approved. |
 
-Open questions include the actual source/building codes and asset mappings, whether the simulator should emit all listed events or only the S1 subset, acceptable buffer cap and disk path, keepalive cadence, which non-503 `5xx` are retryable, how rejected data should be surfaced to operators, whether a profile is wanted, and whether fixed-clock replay should be the only determinism promise.
+Deployment-specific source/building codes and mappings remain operator configuration. D2/D3 will mirror seed event families, use the approved 256 MiB SQLite cap with pause/no-drop behavior, configurable 300-second keepalive default, retry policy in §6, fixed-clock manifest determinism, and no Compose profile or default startup. D2 deliberately excludes the storage-cap and retry implementation assigned to D3.

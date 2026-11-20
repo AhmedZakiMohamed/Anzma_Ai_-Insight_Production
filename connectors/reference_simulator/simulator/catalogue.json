@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "assets": [
+    {"asset_code":"HVAC-AHU-01","external_id":"seed:HVAC-AHU-01","seed_site":"main-tower"},
+    {"asset_code":"HVAC-CRAC-01","external_id":"seed:HVAC-CRAC-01","seed_site":"data-center-annex"},
+    {"asset_code":"HVAC-CHL-01","external_id":"seed:HVAC-CHL-01","seed_site":"main-tower"},
+    {"asset_code":"NET-SW-01","external_id":"seed:NET-SW-01","seed_site":"main-tower"},
+    {"asset_code":"NET-AP-01","external_id":"seed:NET-AP-01","seed_site":"main-tower"},
+    {"asset_code":"NET-SW-02","external_id":"seed:NET-SW-02","seed_site":"data-center-annex"},
+    {"asset_code":"ACS-RDR-01","external_id":"seed:ACS-RDR-01","seed_site":"main-tower"},
+    {"asset_code":"ACS-RDR-02","external_id":"seed:ACS-RDR-02","seed_site":"main-tower"},
+    {"asset_code":"CCTV-CAM-01","external_id":"seed:CCTV-CAM-01","seed_site":"main-tower"},
+    {"asset_code":"CCTV-CAM-02","external_id":"seed:CCTV-CAM-02","seed_site":"data-center-annex"},
+    {"asset_code":"FIRE-PNL-01","external_id":"seed:FIRE-PNL-01","seed_site":"main-tower"},
+    {"asset_code":"FIRE-SMK-01","external_id":"seed:FIRE-SMK-01","seed_site":"main-tower"}
+  ],
+  "points": [
+    {"asset_code":"HVAC-AHU-01","metric_code":"temperature","unit":"C","base":22.0,"amplitude":2.0,"noise":0.6},
+    {"asset_code":"HVAC-AHU-01","metric_code":"humidity","unit":"%","base":45.0,"amplitude":5.0,"noise":2.0},
+    {"asset_code":"HVAC-AHU-01","metric_code":"power_kw","unit":"kW","base":12.0,"amplitude":3.0,"noise":1.0},
+    {"asset_code":"HVAC-CRAC-01","metric_code":"temperature","unit":"C","base":24.0,"amplitude":1.5,"noise":0.5},
+    {"asset_code":"HVAC-CRAC-01","metric_code":"power_kw","unit":"kW","base":18.0,"amplitude":2.0,"noise":1.0},
+    {"asset_code":"HVAC-CHL-01","metric_code":"temperature","unit":"C","base":7.0,"amplitude":0.5,"noise":0.3},
+    {"asset_code":"HVAC-CHL-01","metric_code":"power_kw","unit":"kW","base":60.0,"amplitude":10.0,"noise":3.0},
+    {"asset_code":"NET-SW-01","metric_code":"cpu_load","unit":"%","base":35.0,"amplitude":10.0,"noise":4.0},
+    {"asset_code":"NET-SW-01","metric_code":"packet_loss","unit":"%","base":0.2,"amplitude":0.1,"noise":0.1},
+    {"asset_code":"NET-SW-01","metric_code":"bandwidth_util","unit":"%","base":55.0,"amplitude":15.0,"noise":5.0},
+    {"asset_code":"NET-AP-01","metric_code":"bandwidth_util","unit":"%","base":30.0,"amplitude":12.0,"noise":5.0},
+    {"asset_code":"NET-SW-02","metric_code":"cpu_load","unit":"%","base":28.0,"amplitude":8.0,"noise":3.0},
+    {"asset_code":"CCTV-CAM-01","metric_code":"camera_fps","unit":"fps","base":25.0,"amplitude":0.5,"noise":0.4},
+    {"asset_code":"CCTV-CAM-02","metric_code":"camera_fps","unit":"fps","base":25.0,"amplitude":0.5,"noise":0.4},
+    {"asset_code":"FIRE-SMK-01","metric_code":"smoke_level","unit":"%/m","base":0.5,"amplitude":0.1,"noise":0.05}
+  ],
+  "events": [
+    {"asset_code":"ACS-RDR-01","event_type":"access_denied","minutes_ago":3500,"severity":"INFO","details":{"badge":"B-2211"}},
+    {"asset_code":"ACS-RDR-02","event_type":"door_forced","minutes_ago":3000,"severity":"CRITICAL","details":{"note":"door forced"}},
+    {"asset_code":"CCTV-CAM-02","event_type":"camera_offline","minutes_ago":2700,"severity":"WARNING","details":{"reason":"no video signal"}},
+    {"asset_code":"CCTV-CAM-02","event_type":"camera_online","minutes_ago":2640,"severity":"INFO","details":{}},
+    {"asset_code":"ACS-RDR-01","event_type":"door_held_open","minutes_ago":2400,"severity":"WARNING","details":{"seconds_open":240}},
+    {"asset_code":"NET-SW-01","event_type":"link_down","minutes_ago":1860,"severity":"CRITICAL","details":{"port":"Gi1/0/24"}},
+    {"asset_code":"NET-SW-01","event_type":"link_up","minutes_ago":1830,"severity":"INFO","details":{"port":"Gi1/0/24"}},
+    {"asset_code":"ACS-RDR-02","event_type":"access_denied","minutes_ago":1560,"severity":"WARNING","details":{"badge":"B-1042"}},
+    {"asset_code":"ACS-RDR-02","event_type":"access_denied","minutes_ago":1555,"severity":"WARNING","details":{"badge":"B-1042"}},
+    {"asset_code":"ACS-RDR-02","event_type":"access_denied","minutes_ago":1550,"severity":"WARNING","details":{"badge":"B-1042"}},
+    {"asset_code":"HVAC-CRAC-01","event_type":"hvac_fault","minutes_ago":1260,"severity":"CRITICAL","details":{"note":"temperature deviation"}},
+    {"asset_code":"HVAC-CRAC-01","event_type":"hvac_recovered","minutes_ago":1170,"severity":"INFO","details":{}},
+    {"asset_code":"FIRE-SMK-01","event_type":"fire_alarm_triggered","minutes_ago":720,"severity":"CRITICAL","details":{"zone":"Server Room"}},
+    {"asset_code":"FIRE-SMK-01","event_type":"alarm_cleared","minutes_ago":708,"severity":"INFO","details":{"cleared_by":"operator"}},
+    {"asset_code":"CCTV-CAM-02","event_type":"camera_offline","minutes_ago":300,"severity":"WARNING","details":{"reason":"no video signal"}}
+  ]
+}
