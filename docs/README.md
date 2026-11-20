@@ -193,6 +193,7 @@ The v1 ingestion contract, response semantics, API-key lifecycle, and provisioni
 | [`BACKUP.md`](BACKUP.md) | Scheduled PostgreSQL backup creation, retention, and verification status. |
 | [`RESTORE_RUNBOOK.md`](RESTORE_RUNBOOK.md) | Scratch restore verification and incident cutover/rollback procedure. |
 | [`SIMULATOR_DESIGN.md`](SIMULATOR_DESIGN.md) | Human decision note for the proposed reference simulator connector. |
+| [`FRESHNESS_DESIGN.md`](FRESHNESS_DESIGN.md) | Human decision note for reporting freshness, source liveness, data gaps, and building schedules. |
 
 ## Project status and limitations
 
