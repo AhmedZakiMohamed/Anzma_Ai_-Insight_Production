@@ -36,7 +36,8 @@ DB = psycopg.connect(host=HOST, port=PORT, user=USER, password=PASSWORD, dbname=
                      autocommit=True)
 DB.execute(sql_file("db/init/anzma_schema_and_seed.sql"))
 for _m in ("003_incidents", "004_chat_views", "005_alert_uniqueness", "006_ingestion_foundation",
-           "007_event_source_identity", "008_ingestion_contract_conformance", "009_freshness_expectations"):   # runtime sequence
+           "007_event_source_identity", "008_ingestion_contract_conformance", "009_freshness_expectations",
+           "010_data_gap_lifecycle"):   # runtime sequence
     DB.execute(sql_file(f"db/migrations/{_m}.sql"))
 
 TEST_USER_TOKEN = "integration-test-user-api-token-not-for-deployment"

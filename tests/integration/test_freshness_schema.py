@@ -39,8 +39,15 @@ class FreshnessSchemaTests(unittest.TestCase):
         self.building_id = self.conn.execute(
             "SELECT building_id FROM buildings ORDER BY building_id LIMIT 1"
         ).fetchone()[0]
+        location_id, system_type_id = self.conn.execute(
+            "SELECT l.location_id,a.system_type_id FROM assets a JOIN locations l USING(location_id) "
+            "WHERE l.building_id=%s ORDER BY a.asset_id LIMIT 1", (self.building_id,)
+        ).fetchone()
+        suffix = uuid4().hex[:12]
         self.asset_id = self.conn.execute(
-            "SELECT asset_id FROM assets ORDER BY asset_id LIMIT 1"
+            """INSERT INTO assets(asset_code,name,asset_type,system_type_id,location_id)
+               VALUES (%s,%s,'freshness-schema-test',%s,%s) RETURNING asset_id""",
+            (f"E2-SCHEMA-{suffix}", f"E2 schema test {suffix}", system_type_id, location_id),
         ).fetchone()[0]
         self.metric_code = self.conn.execute(
             "SELECT name FROM metric_types ORDER BY metric_id LIMIT 1"
@@ -115,8 +122,11 @@ class FreshnessSchemaTests(unittest.TestCase):
 
     def test_duplicate_gap_series_and_start_is_rejected(self):
         values = (self.asset_id, "telemetry", self.metric_code, "2026-01-01T00:00:00Z")
-        sql = """INSERT INTO data_gaps(asset_id,record_kind,metric_code,gap_start)
-                 VALUES (%s,%s,%s,%s)"""
+        sql = """INSERT INTO data_gaps(building_id,asset_id,record_kind,metric_code,gap_start,opened_at,
+                                         last_evaluated_at,expected_interval_seconds,detected_at,
+                                         opened_in_work_hours,cause,cause_updated_at)
+                 VALUES (%s,%s,%s,%s,%s,now(),now(),900,now(),true,'UNKNOWN',now())"""
+        values = (self.building_id, *values)
         self.conn.execute(sql, values)
         self.assert_constraint_rejects(sql, values, errors.UniqueViolation)
 

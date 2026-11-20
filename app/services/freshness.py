@@ -8,15 +8,20 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
+import logging
 from typing import Any, Iterable, Mapping
+from zoneinfo import ZoneInfo
 
 from app.adapters.database import db_adapter as da
+from app.config.freshness_defaults import BUILDING_TIMEZONE, NON_WORKING_WEEKDAYS, WORK_END_LOCAL, WORK_START_LOCAL
 
 
 SCOPE_ORDER = {"ASSET_METRIC": 0, "ASSET_TYPE_METRIC": 1, "SOURCE": 2, "GLOBAL": 3}
 PAGE_SIZE = 250
 MAX_ERROR_CHARS = 500
 STATE_NAMES = ("FRESH", "STALE", "MISSING", "UNKNOWN", "NOT_APPLICABLE")
+_MISSING_SCHEDULE_WARNED = False
+_LOGGER = logging.getLogger("anzma.freshness")
 
 
 def _as_utc(value: datetime, field: str) -> datetime:
@@ -108,7 +113,10 @@ def evaluate_state(
 
 
 _CANDIDATE_SQL = """
-SELECT source_id,asset_id,record_kind,metric_code,event_type,asset_type FROM (
+SELECT c.source_id,c.asset_id,c.record_kind,c.metric_code,c.event_type,c.asset_type,
+       a.lifecycle_status,l.building_id,b.timezone,b.work_start_local,b.work_end_local,
+       b.non_working_weekdays,ds.status AS source_status
+  FROM (
     SELECT DISTINCT t.source_id,t.asset_id,'telemetry'::text AS record_kind,
            m.name AS metric_code,NULL::text AS event_type,a.asset_type
       FROM v_telemetry_valid t
@@ -148,7 +156,11 @@ SELECT source_id,asset_id,record_kind,metric_code,event_type,asset_type FROM (
            SELECT 1 FROM event_records e JOIN event_types et USING (event_type_id)
            WHERE r.record_kind='event' AND e.asset_id=a.asset_id AND et.name=r.event_type
        )
-) AS candidate_series
+) AS c
+  JOIN assets a USING (asset_id)
+  JOIN locations l USING (location_id)
+  JOIN buildings b USING (building_id)
+  LEFT JOIN data_sources ds ON ds.source_id=c.source_id
 """
 
 
@@ -166,13 +178,13 @@ def _prepare_candidates(cur: Any, now: datetime) -> None:
 
 def _candidate_page(cur: Any, after: tuple[Any, ...] | None, limit: int) -> list[dict[str, Any]]:
     if after is None:
-        query = """SELECT source_id,asset_id,record_kind,metric_code,event_type,asset_type
+        query = """SELECT *
                      FROM pg_temp.freshness_candidates
                     ORDER BY asset_id,record_kind,COALESCE(source_id,0),COALESCE(metric_code,''),COALESCE(event_type,'')
                     LIMIT %s"""
         params = (limit,)
     else:
-        query = """SELECT source_id,asset_id,record_kind,metric_code,event_type,asset_type
+        query = """SELECT *
                      FROM pg_temp.freshness_candidates
           WHERE ROW(asset_id,record_kind,COALESCE(source_id,0),COALESCE(metric_code,''),COALESCE(event_type,''))
              > ROW(%s::bigint,%s::text,%s::bigint,%s::text,%s::text)
@@ -265,52 +277,81 @@ def _gap_values(series: Mapping[str, Any]) -> tuple[Any, ...]:
     return (series["source_id"], series["asset_id"], series["record_kind"], series["metric_code"], series["event_type"])
 
 
-def _update_gaps(cur: Any, series: Mapping[str, Any], state: str, now: datetime) -> tuple[int, int]:
+def opened_in_work_hours(series: Mapping[str, Any], detected_at: datetime) -> bool:
+    """Report whether detection fell in the configured local work schedule; never gates evaluation."""
+    global _MISSING_SCHEDULE_WARNED
+    timezone_name = series.get("timezone")
+    work_start = series.get("work_start_local")
+    work_end = series.get("work_end_local")
+    non_working = series.get("non_working_weekdays")
+    if not timezone_name or work_start is None or work_end is None or non_working is None:
+        if not _MISSING_SCHEDULE_WARNED:
+            _LOGGER.warning("Building schedule is incomplete; using E1 parity defaults for opened_in_work_hours.")
+            _MISSING_SCHEDULE_WARNED = True
+        timezone_name = timezone_name or BUILDING_TIMEZONE
+        work_start = work_start if work_start is not None else WORK_START_LOCAL
+        work_end = work_end if work_end is not None else WORK_END_LOCAL
+        non_working = non_working if non_working is not None else NON_WORKING_WEEKDAYS
+    local_time = _as_utc(detected_at, "detected_at").astimezone(ZoneInfo(timezone_name))
+    clock_time = local_time.timetz().replace(tzinfo=None)
+    return local_time.isoweekday() not in non_working and work_start <= clock_time < work_end
+
+
+def _update_gaps(cur: Any, series: Mapping[str, Any], expectation: Mapping[str, Any],
+                 state: str, now: datetime) -> tuple[int, int]:
     source_id, asset_id, record_kind, metric_code, event_type = _gap_values(series)
     observed = series["last_observed_at"]
+    opened = 0
     closed = 0
-    if observed is not None:
+    cur.execute(
+        """SELECT gap_id,gap_start,detected_at FROM data_gaps
+             WHERE source_id IS NOT DISTINCT FROM %s AND asset_id=%s AND record_kind=%s
+               AND metric_code IS NOT DISTINCT FROM %s AND event_type IS NOT DISTINCT FROM %s
+               AND gap_end IS NULL FOR UPDATE""",
+        (source_id, asset_id, record_kind, metric_code, event_type),
+    )
+    open_gap = cur.fetchone()
+    # A backfill timestamp that falls after gap_start but before detection is
+    # still inside the already-detected silent interval; it cannot close it.
+    if (open_gap is not None and observed is not None
+            and observed > max(open_gap["gap_start"], open_gap["detected_at"])):
         cur.execute(
             """UPDATE data_gaps SET gap_end=%s,closed_by='OBSERVATION',closed_at=%s,last_evaluated_at=%s
-                 WHERE source_id IS NOT DISTINCT FROM %s AND asset_id=%s AND record_kind=%s
-                   AND metric_code IS NOT DISTINCT FROM %s AND event_type IS NOT DISTINCT FROM %s
-                   AND gap_end IS NULL AND gap_start < %s""",
-            (observed, now, now, source_id, asset_id, record_kind, metric_code, event_type, observed),
+                 WHERE gap_id=%s AND gap_end IS NULL""",
+            (observed, now, now, open_gap["gap_id"]),
         )
         closed = cur.rowcount
+        open_gap = None
 
-    if state == "MISSING" and observed is not None:
+    if open_gap is not None:
+        cur.execute("UPDATE data_gaps SET last_evaluated_at=%s WHERE gap_id=%s AND last_evaluated_at IS DISTINCT FROM %s",
+                    (now, open_gap["gap_id"], now))
+        return opened, closed
+
+    eligible = series.get("lifecycle_status") == "ACTIVE" and series.get("source_status") != "DISABLED"
+    if state == "MISSING" and observed is not None and eligible:
         cur.execute(
-            """SELECT gap_id,gap_end,last_evaluated_at FROM data_gaps
+            """SELECT 1 FROM data_gaps
                  WHERE source_id IS NOT DISTINCT FROM %s AND asset_id=%s AND record_kind=%s
                    AND metric_code IS NOT DISTINCT FROM %s AND event_type IS NOT DISTINCT FROM %s
-                   AND gap_start=%s FOR UPDATE""",
-            (source_id, asset_id, record_kind, metric_code, event_type, observed),
+                   AND gap_end IS NOT NULL AND gap_start < %s AND %s < gap_end
+                 LIMIT 1""",
+            (source_id, asset_id, record_kind, metric_code, event_type, observed, observed),
         )
-        existing = cur.fetchone()
-        if existing is None:
-            cur.execute(
-                """INSERT INTO data_gaps
-                       (source_id,asset_id,record_kind,metric_code,event_type,gap_start,opened_at,last_evaluated_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
-                   ON CONFLICT ON CONSTRAINT data_gaps_series_gap_key DO NOTHING RETURNING gap_id""",
-                (source_id, asset_id, record_kind, metric_code, event_type, observed, now, now),
-            )
-            opened = 1 if cur.fetchone() else 0
-        else:
-            opened = 0
-            if existing["gap_end"] is None and existing["last_evaluated_at"] != now:
-                cur.execute("UPDATE data_gaps SET last_evaluated_at=%s WHERE gap_id=%s", (now, existing["gap_id"]))
-    else:
-        opened = 0
-        if state != "MISSING":
-            cur.execute(
-                """UPDATE data_gaps SET last_evaluated_at=%s
-                     WHERE source_id IS NOT DISTINCT FROM %s AND asset_id=%s AND record_kind=%s
-                       AND metric_code IS NOT DISTINCT FROM %s AND event_type IS NOT DISTINCT FROM %s
-                       AND gap_end IS NULL AND last_evaluated_at IS DISTINCT FROM %s""",
-                (now, source_id, asset_id, record_kind, metric_code, event_type, now),
-            )
+        if cur.fetchone() is not None:
+            return opened, closed
+        cur.execute(
+            """INSERT INTO data_gaps
+                   (source_id,building_id,asset_id,record_kind,metric_code,event_type,gap_start,
+                    opened_at,last_evaluated_at,expected_interval_seconds,detected_at,
+                    opened_in_work_hours,cause,cause_updated_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'UNKNOWN',%s)
+               ON CONFLICT DO NOTHING RETURNING gap_id""",
+            (source_id, series["building_id"], asset_id, record_kind, metric_code, event_type,
+             observed, now, now, expectation["expected_interval_seconds"], now,
+             opened_in_work_hours(series, now), now),
+        )
+        opened = 1 if cur.fetchone() else 0
     return opened, closed
 
 
@@ -363,7 +404,7 @@ def run_once(conn: Any, now: datetime, batch_size: int = PAGE_SIZE) -> dict[str,
                         totals["series_evaluated"] += 1
                         continue
                     _upsert_current(cur, series, exp, result, instant)
-                    opened, closed = _update_gaps(cur, series, result["freshness"], instant)
+                    opened, closed = _update_gaps(cur, series, exp, result["freshness"], instant)
                     totals["series_evaluated"] += 1
                     totals["gaps_opened"] += opened
                     totals["gaps_closed"] += closed

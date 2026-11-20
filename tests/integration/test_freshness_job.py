@@ -167,7 +167,7 @@ class FreshnessJobIntegrationTests(unittest.TestCase):
         self.run_evaluator()
         self.assertEqual(self.current_row(event_only, "event", event_type="heartbeat")[1], "FRESH")
 
-    def test_missing_gap_is_idempotent_old_backfill_does_not_close_and_newer_late_data_closes(self):
+    def test_missing_gap_is_idempotent_backfill_does_not_close_and_newer_observation_closes(self):
         asset = self.add_asset("GAP")
         self.add_expectation(asset)
         first = NOW - timedelta(seconds=1000)
@@ -192,14 +192,20 @@ class FreshnessJobIntegrationTests(unittest.TestCase):
         late = first + timedelta(seconds=100)
         self.add_telemetry(asset, late, NOW)
         self.run_evaluator()
-        closed = self.conn.execute("SELECT gap_end,closed_by,closed_at FROM data_gaps WHERE gap_id=%s", (original[0],)).fetchone()
-        self.assertEqual(closed, (late, "OBSERVATION", NOW))
-        self.assertEqual(self.conn.execute("SELECT count(*) FROM data_gaps WHERE asset_id=%s AND gap_end IS NULL",
-                                           (asset,)).fetchone()[0], 1)
+        self.assertIsNone(self.conn.execute("SELECT gap_end FROM data_gaps WHERE gap_id=%s", (original[0],)).fetchone()[0])
+        self.assertEqual(self.conn.execute("SELECT gap_start FROM data_gaps WHERE gap_id=%s", (original[0],)).fetchone()[0], first)
 
-        newest = NOW - timedelta(seconds=5)
-        self.add_telemetry(asset, newest, NOW)
-        self.run_evaluator()
+        resumed = NOW + timedelta(seconds=10)
+        self.add_telemetry(asset, resumed, NOW + timedelta(seconds=11))
+        self.run_evaluator(now=NOW + timedelta(seconds=20))
+        closed = self.conn.execute("SELECT gap_end,closed_by,closed_at FROM data_gaps WHERE gap_id=%s", (original[0],)).fetchone()
+        self.assertEqual(closed, (resumed, "OBSERVATION", NOW + timedelta(seconds=20)))
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM data_gaps WHERE asset_id=%s AND gap_end IS NULL",
+                                           (asset,)).fetchone()[0], 0)
+
+        newest = NOW + timedelta(seconds=15)
+        self.add_telemetry(asset, newest, NOW + timedelta(seconds=21))
+        self.run_evaluator(now=NOW + timedelta(seconds=22))
         self.assertEqual(self.current_row(asset)[1], "FRESH")
         self.assertEqual(self.conn.execute("SELECT count(*) FROM data_gaps WHERE asset_id=%s AND gap_end IS NULL",
                                            (asset,)).fetchone()[0], 0)
