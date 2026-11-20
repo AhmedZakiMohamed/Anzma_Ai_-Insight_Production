@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from app.services.freshness import evaluate_state, resolve_expectation
+from app.services.freshness import evaluate_state, opened_in_work_hours, resolve_expectation
 
 
 NOW = datetime(2026, 11, 20, 12, 0, tzinfo=timezone.utc)
@@ -94,6 +94,19 @@ class FreshnessPureFunctionTests(unittest.TestCase):
     def test_naive_time_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "timezone-aware"):
             evaluate_state(datetime(2026, 11, 20, 12, 0), NOW, expectation())
+
+    def test_opened_in_work_hours_uses_building_zone_and_weekdays(self):
+        building = {"timezone": "America/New_York", "work_start_local": datetime.strptime("08:00", "%H:%M").time(),
+                    "work_end_local": datetime.strptime("18:00", "%H:%M").time(), "non_working_weekdays": [6, 7]}
+        self.assertTrue(opened_in_work_hours(building, datetime(2026, 11, 20, 15, 0, tzinfo=timezone.utc)))
+        self.assertFalse(opened_in_work_hours(building, datetime(2026, 11, 20, 23, 0, tzinfo=timezone.utc)))
+        self.assertFalse(opened_in_work_hours(building, datetime(2026, 11, 21, 15, 0, tzinfo=timezone.utc)))
+
+    def test_opened_in_work_hours_observes_dst_from_zoneinfo(self):
+        building = {"timezone": "America/New_York", "work_start_local": datetime.strptime("08:00", "%H:%M").time(),
+                    "work_end_local": datetime.strptime("18:00", "%H:%M").time(), "non_working_weekdays": []}
+        self.assertTrue(opened_in_work_hours(building, datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc)))
+        self.assertTrue(opened_in_work_hours(building, datetime(2026, 1, 20, 13, 0, tzinfo=timezone.utc)))
 
 
 if __name__ == "__main__":

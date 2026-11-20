@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Migrations 006–008 implement ingestion; migration `009_freshness_expectations.sql` adds approved freshness/schedule schema only. The shared existing database has not been migrated. The evaluator and alert/API behavior remain future work. |
+| **Status** | Migrations 006–010 implement ingestion and additive freshness/gap schema; the E3 CLI evaluator and E4a gap lifecycle are implemented. The shared existing database has not been migrated. E4b source-level cause classification and any alert/API consumer behavior remain future work. |
 | **Principle** | Incremental, additive, reversible. Existing tables, columns, views and API shapes keep working at every step. |
 | **Related** | `CORE_DATA_ARCHITECTURE.md`, `CANONICAL_DATA_MODEL.md`, `HISTORIAN_DESIGN.md`, `SPRINT_1_TECHNICAL_ISSUES.md` |
 
@@ -66,8 +66,9 @@ The repository already uses `005_alert_uniqueness.sql`; migrations 006–009 are
 | `006_ingestion_foundation.sql` **Implemented** | migration ledger; building code; source/key registry; source-scoped asset mappings; nullable provenance and quality fields; batch/rejection audit; state facts; quality-aware views | Additive, no historical fact updates or deletes; not yet applied to shared DB |
 | `007_event_source_identity.sql` **Implemented** | source-event identity unique index; partial legacy natural-key index; drops only the redundant unique constraint, never rows | Additive index change; no historical rows updated/deleted; not yet applied to shared DB |
 | `008_ingestion_contract_conformance.sql` **Implemented** | per-source back-date limit; batch diagnostics; rejection source/external ID and unmapped view; optional metric plausibility bounds | Additive; no historical facts or rejections changed |
-| `009_freshness_expectations.sql` **Implemented** | Nullable building timezone/work schedule with parity backfill; contract-ordered expectations; global telemetry/heartbeat/source defaults; gaps and per-series current-freshness tables | Additive; no historical facts rewritten; no evaluator, alerts, or incidents |
-| Future migration(s), number assigned later | organizations, derived equipment state, compatibility views, retention, and optional rollups | Requires separate approval and data review |
+| `009_freshness_expectations.sql` **Implemented** | Nullable building timezone/work schedule with parity backfill; contract-ordered expectations; global telemetry/heartbeat/source defaults; gaps and per-series current-freshness tables | Additive; no historical facts rewritten |
+| `010_data_gap_lifecycle.sql` **Implemented** | Gap detection snapshot, work-hours information, cause lifecycle, immutable boundaries, one open gap per series, and explicit asset lifecycle status | Additive; historical gap rows are enriched; no telemetry/event/alert/incident facts rewritten |
+| Future migrations, numbered sequentially | organizations, derived equipment state, compatibility views, retention, and optional rollups | Requires separate approval and data review |
 
 **Pitfall to avoid (specific to this schema):** `ALTER TABLE … ADD COLUMN received_at TIMESTAMPTZ DEFAULT now()` would stamp every **existing** row with the migration time, falsely claiming it was received then. Add the column without a default, leave legacy rows `NULL`, and only afterwards `SET DEFAULT now()` for new inserts.
 
@@ -190,9 +191,9 @@ Report format: one table per run (check, before, after, status), kept with the p
 
 ## 11. Deployment considerations
 
-- **Fresh vs existing databases:** Compose mounts migrations 003–009 into `docker-entrypoint-initdb.d`, which Postgres runs **only on an empty volume**. Existing deployments use the advisory-locked runner for 006+; changing init mounts alone does not upgrade them.
+- **Fresh vs existing databases:** Compose mounts migrations 003–010 into `docker-entrypoint-initdb.d`, which Postgres runs **only on an empty volume**. Existing deployments use the advisory-locked runner for 006+; changing init mounts alone does not upgrade them.
 - **Fresh installs** should eventually be created by the same runner from a baseline snapshot, so fresh and migrated databases converge.
-- **Order of deployment:** deploy code that tolerates the old schema → back up/review → apply migrations 006–009 → provision building schedule/expectations and source credentials. The v1 route returns a schema-not-applied error before its required ingestion migrations.
+- **Order of deployment:** deploy code that tolerates the old schema → back up/review → apply migrations 006–010 → provision building schedule/expectations and source credentials. The v1 route returns a schema-not-applied error before its required ingestion migrations.
 - **Zero-downtime considerations:** additive DDL is metadata-only; backfill in small batches; `CREATE INDEX CONCURRENTLY`; run validation off-peak.
 - **Detection loop** runs inside the API process (`app/main.py`); consider an advisory lock if multiple workers or concurrency tests show a race remains.
 - **Secrets:** no credentials in migrations or docs; `.env` is untracked and must not be shipped in archives (`README.md` and `.gitignore` confirm it is git-ignored; the hand-over ZIP contained one).
@@ -209,7 +210,7 @@ Report format: one table per run (check, before, after, status), kept with the p
 | 5 | Legacy `received_at` unknown | Keep NULL; documents and APIs must treat NULL as “unknown” |
 | 6 | Two DB drivers and three connection factories complicate shared code | Consolidate in M6; new code uses the driver already used by the module it extends |
 | 7 | Detection loop in API process duplicates under multiple workers | Advisory lock before scaling |
-| 8 | Test suites rebuild databases from the base schema | Apply migrations 003–009 in the test harness; test only against isolated databases. |
+| 8 | Test suites rebuild databases from the base schema | Apply migrations 003–010 in the test harness; test only against isolated databases. |
 | 9 | Seed is data-relative and non-reproducible across loads | Same-database before/after comparison (§9.1) |
 | 10 | Existing-database migration is an operational deployment step | Use the implemented advisory-locked runner after backup/review; no live migration performed here. |
 | 11 | Historical snapshot: legacy API/DB surfaces did not have broad authentication | Current closure work adds bearer/session authentication to normal operational REST and Socket.IO, while v1 ingestion uses source-scoped keys. Per-user identity/RBAC remains open. PostgreSQL/Ollama bind to loopback by default; explicit host overrides may expose them. |

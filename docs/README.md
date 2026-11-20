@@ -33,7 +33,7 @@ flowchart LR
     TRENDS --> DASH
 ```
 
-The database stores telemetry and event observations separately. Both belong to an asset, and the reference catalogues validate that a metric or event type is compatible with that asset's system. The canonical schema and synthetic seed are in [`db/init/anzma_schema_and_seed.sql`](../db/init/anzma_schema_and_seed.sql); Compose applies migrations 003–009 from [`db/migrations/`](../db/migrations/).
+The database stores telemetry and event observations separately. Both belong to an asset, and the reference catalogues validate that a metric or event type is compatible with that asset's system. The canonical schema and synthetic seed are in [`db/init/anzma_schema_and_seed.sql`](../db/init/anzma_schema_and_seed.sql); Compose applies migrations 003–010 from [`db/migrations/`](../db/migrations/).
 
 ## Systems and their assets
 

@@ -29,7 +29,8 @@ Anzma AI Insight today is a single-database, simulated-data application. The his
 5. `db/migrations/006_ingestion_foundation.sql` — sources/hashed credentials, scoped asset mappings, nullable fact provenance and quality, batch/rejection audit, state facts, and compatibility views.
 6. `db/migrations/007_event_source_identity.sql` — preserve the legacy event key only for rows without source IDs; source events are unique by `(source_id, source_event_id)`.
 7. `db/migrations/008_ingestion_contract_conformance.sql` — back-date policy, batch/source diagnostics, rejection lookup metadata/view, and optional plausibility bounds.
-8. `db/migrations/009_freshness_expectations.sql` — nullable building timezone/schedule, expectation defaults, and gap/current-freshness storage; no evaluator or alert behavior.
+8. `db/migrations/009_freshness_expectations.sql` — nullable building timezone/schedule, expectation defaults, and gap/current-freshness storage.
+9. `db/migrations/010_data_gap_lifecycle.sql` — additive detection context, cause lifecycle, immutable boundaries, and one-open-gap-per-series enforcement. The E3 CLI job evaluates gaps; E4b source-level cause classification is not implemented here.
 
 The existing intelligence (KPI engine, alert engine, incident engine, evidence verification, grounding validation, chat assistant) is coherent and tested (`TEST_RESULTS_DAY2.txt`: 43/43 integration checks; `TEST_RESULTS_CHAT_CONSISTENCY.txt`: 31/31). **It should be preserved, not rewritten.**
 
