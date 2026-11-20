@@ -124,10 +124,10 @@ def alert_params(rule="R1", method="threshold", sev="warning", asset=None, first
     return (rule, method, sev, asset or ASSET, first, last or first, first, status, resolved)
 
 
-@test("clean install: sequence applied, 23 tables including freshness schema and 8 views exist")
+@test("clean install: sequence applied, 26 tables including E4b liveness and 8 views exist")
 def _():
     n = one("SELECT count(*) AS n FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'")["n"]
-    assert n == 23, n
+    assert n == 26, n
     for table in ("reporting_expectations", "data_gaps", "series_freshness_current"):
         assert one("SELECT count(*) AS n FROM information_schema.tables WHERE table_schema='public' AND table_name=%s", (table,))["n"] == 1
     v = one("SELECT count(*) AS n FROM information_schema.views WHERE table_schema='public'")["n"]

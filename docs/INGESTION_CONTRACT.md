@@ -579,10 +579,12 @@ Full formulas live in `CANONICAL_DATA_MODEL.md` §9. This section fixes the cont
 | `UNKNOWN` | No observation has ever been received for the series. Never shown as `FRESH`. |
 | Event-only devices | Door readers and similar have no telemetry expectation: `NOT_APPLICABLE` unless they send heartbeats. |
 | Different per device/metric? | **Yes.** `E` is per `(asset, metric)`. A 15-minute temperature series and an hourly heartbeat on the same asset are judged independently. |
-| Source-level liveness | `last_received_at` of the source versus its keepalive interval (default 300 s **[Proposed]**): `STALE` after 2×, `LOST` after 5×. If every asset of a source goes stale together, the cause is the source or connector, not N broken devices. |
+| Source-level liveness | E4b states are `ALIVE`, `SILENT`, `UNKNOWN`, and `DISABLED`. Disabled source status takes precedence and yields `DISABLED`. Otherwise, `UNKNOWN` means no batch was received or no usable keepalive expectation exists. Evidence is `data_sources.last_received_at` from any received batch, including an all-rejected batch. `SILENT` applies only when elapsed time is **greater than 3×** the expected keepalive interval; it is `ALIVE` at or below that boundary. The interval is 300 s by default, with a nullable per-source override. `ANZMA_SOURCE_SILENCE_MULTIPLIER` configures the 3× multiplier. |
 | Backfill | Freshness uses `observed_at`. A `BACKFILL` batch of old readings does **not** make an asset fresh. |
 
 Worked example (`E = 900 s`): last reading 20 min ago → `FRESH`; 50 min → `STALE`; 90 min → `MISSING`.
+
+Source liveness is evidence only. `last_success_at`, `last_error_at`, `last_error`, and the latest `connector_status` are exposed as separate diagnostic evidence and do not change the liveness state. For each evaluation, a source is **mass-stale** only when at least 3 active expected series exist and at least 50% are `STALE` or `MISSING`; configure these defaults with `ANZMA_MASS_STALE_MIN_SERIES` and `ANZMA_MASS_STALE_PERCENT`. Open-gap cause classification is: `SOURCE_SUSPECTED` for a `SILENT` source or an `ALIVE` mass-stale source; `NO_DATA` for an `ALIVE` source that is not mass-stale; otherwise leave cause `UNKNOWN`. Classification changes are audited and apply only to open gaps. Source liveness and gap causes never change asset health, create `OFFLINE`/`UNAVAILABLE`, or generate alerts.
 
 ---
 

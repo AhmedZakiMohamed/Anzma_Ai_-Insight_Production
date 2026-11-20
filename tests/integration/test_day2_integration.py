@@ -29,7 +29,6 @@ MIGRATION_008 = os.path.join(MIGRATION_DIR, "008_ingestion_contract_conformance.
 MIGRATION_009 = os.path.join(MIGRATION_DIR, "009_freshness_expectations.sql")  # freshness expectations and schedule schema
 MIGRATION_010 = os.path.join(MIGRATION_DIR, "010_data_gap_lifecycle.sql")  # data-gap lifecycle metadata and uniqueness
 MIGRATION_011 = os.path.join(MIGRATION_DIR, "011_source_liveness.sql")  # E4b source liveness and cause audit
-MIGRATION_011 = os.path.join(MIGRATION_DIR, "011_source_liveness.sql")  # E4b source liveness and cause audit
 
 
 def connect(db, **kw):
