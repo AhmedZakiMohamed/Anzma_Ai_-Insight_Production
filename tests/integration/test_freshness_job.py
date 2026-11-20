@@ -59,7 +59,8 @@ class FreshnessJobIntegrationTests(unittest.TestCase):
         cls.conn.close()
 
     def setUp(self):
-        self.conn.execute("TRUNCATE series_freshness_current,data_gaps RESTART IDENTITY")
+        self.conn.execute("""TRUNCATE data_gap_cause_history,source_liveness_transitions,source_liveness_current,
+                              series_freshness_current,data_gaps RESTART IDENTITY""")
         self.conn.commit()
 
     def add_asset(self, tag: str) -> int:

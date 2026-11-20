@@ -68,10 +68,14 @@ class FreshnessGapLifecycleTests(unittest.TestCase):
                 "source": source, "expectation": expectation}
 
     def cleanup_series(self, building, location, asset, source, expectation):
+        self.db.execute("DELETE FROM data_gap_cause_history WHERE gap_id IN (SELECT gap_id FROM data_gaps WHERE asset_id=%s)",
+                        (asset,))
         self.db.execute("DELETE FROM data_gaps WHERE asset_id=%s", (asset,))
         self.db.execute("DELETE FROM series_freshness_current WHERE asset_id=%s", (asset,))
         self.db.execute("DELETE FROM telemetry_records WHERE asset_id=%s", (asset,))
         self.db.execute("DELETE FROM reporting_expectations WHERE expectation_id=%s", (expectation,))
+        self.db.execute("DELETE FROM source_liveness_transitions WHERE source_id=%s", (source,))
+        self.db.execute("DELETE FROM source_liveness_current WHERE source_id=%s", (source,))
         self.db.execute("DELETE FROM data_sources WHERE source_id=%s", (source,))
         self.db.execute("DELETE FROM assets WHERE asset_id=%s", (asset,))
         self.db.execute("DELETE FROM locations WHERE location_id=%s", (location,))

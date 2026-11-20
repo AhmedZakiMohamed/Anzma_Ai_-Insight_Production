@@ -28,6 +28,8 @@ MIGRATION_007 = os.path.join(MIGRATION_DIR, "007_event_source_identity.sql")  # 
 MIGRATION_008 = os.path.join(MIGRATION_DIR, "008_ingestion_contract_conformance.sql")  # contract conformance fields
 MIGRATION_009 = os.path.join(MIGRATION_DIR, "009_freshness_expectations.sql")  # freshness expectations and schedule schema
 MIGRATION_010 = os.path.join(MIGRATION_DIR, "010_data_gap_lifecycle.sql")  # data-gap lifecycle metadata and uniqueness
+MIGRATION_011 = os.path.join(MIGRATION_DIR, "011_source_liveness.sql")  # E4b source liveness and cause audit
+MIGRATION_011 = os.path.join(MIGRATION_DIR, "011_source_liveness.sql")  # E4b source liveness and cause audit
 
 
 def connect(db, **kw):
@@ -58,7 +60,8 @@ def build_database():
         c.execute(sql003)                                  # idempotent: a second run must not fail
         conn.commit()
         after = snapshot(c)                                # snapshot proves 003 alone; 004/005 follow (runtime sequence)
-        for path in (MIGRATION_004, MIGRATION_005, MIGRATION_006, MIGRATION_007, MIGRATION_008, MIGRATION_009, MIGRATION_010):
+        for path in (MIGRATION_004, MIGRATION_005, MIGRATION_006, MIGRATION_007, MIGRATION_008,
+                     MIGRATION_009, MIGRATION_010, MIGRATION_011):
             sql = open(path, encoding="utf-8").read()
             c.execute(sql)
             conn.commit()

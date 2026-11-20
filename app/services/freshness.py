@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 from app.adapters.database import db_adapter as da
 from app.config.freshness_defaults import BUILDING_TIMEZONE, NON_WORKING_WEEKDAYS, WORK_END_LOCAL, WORK_START_LOCAL
+from app.config.source_liveness import SourceLivenessConfig
 
 
 SCOPE_ORDER = {"ASSET_METRIC": 0, "ASSET_TYPE_METRIC": 1, "SOURCE": 2, "GLOBAL": 3}
@@ -355,7 +356,121 @@ def _update_gaps(cur: Any, series: Mapping[str, Any], expectation: Mapping[str, 
     return opened, closed
 
 
-def run_once(conn: Any, now: datetime, batch_size: int = PAGE_SIZE) -> dict[str, Any]:
+def _evaluate_source_liveness(cur: Any, now: datetime, config: SourceLivenessConfig) -> dict[str, Any]:
+    """Persist one source snapshot, then classify open gaps from that snapshot.
+
+    Series pages are committed before this function; all are evaluated with the
+    same ``now``. This transaction serializes source snapshots and cause changes.
+    """
+    cur.execute("SELECT pg_advisory_xact_lock(718230642)")
+    cur.execute(
+        """SELECT ds.source_id,ds.status,ds.last_received_at,ds.last_success_at,
+                  ds.last_error_at,ds.last_error,ds.keepalive_interval_seconds,
+                  COALESCE(ds.keepalive_interval_seconds,global_exp.expected_interval_seconds) AS expected_interval_seconds,
+                  batch.connector_status,
+                  stats.active_series_count,stats.stale_series_count,stats.missing_series_count
+             FROM data_sources ds
+             LEFT JOIN LATERAL (
+                 SELECT expected_interval_seconds FROM reporting_expectations
+                  WHERE scope='GLOBAL' AND record_kind='source' AND priority=0
+                    AND valid_from <= %s AND (valid_to IS NULL OR %s < valid_to)
+                  ORDER BY valid_from DESC,expectation_id DESC LIMIT 1
+             ) global_exp ON TRUE
+             LEFT JOIN LATERAL (
+                 SELECT count(*)::integer AS active_series_count,
+                        count(*) FILTER (WHERE f.freshness='STALE')::integer AS stale_series_count,
+                        count(*) FILTER (WHERE f.freshness='MISSING')::integer AS missing_series_count
+                   FROM series_freshness_current f JOIN assets a USING(asset_id)
+                  WHERE f.source_id=ds.source_id AND f.evaluated_at=%s AND a.lifecycle_status='ACTIVE'
+             ) stats ON TRUE
+             LEFT JOIN LATERAL (
+                 SELECT b.connector_status FROM ingestion_batches b
+                  WHERE b.source_id=ds.source_id
+                  ORDER BY b.received_at DESC,b.ingestion_batch_id DESC LIMIT 1
+             ) batch ON TRUE
+            ORDER BY ds.source_id""",
+        (now, now, now),
+    )
+    source_rows = [dict(row) for row in cur.fetchall()]
+    state_counts = {state: 0 for state in ("ALIVE", "SILENT", "UNKNOWN", "DISABLED")}
+    for row in source_rows:
+        interval = row["expected_interval_seconds"]
+        received = row["last_received_at"]
+        age_seconds = max(0, int((now - received).total_seconds())) if received is not None else None
+        active = row["active_series_count"] or 0
+        stale = row["stale_series_count"] or 0
+        missing = row["missing_series_count"] or 0
+        stale_total = stale + missing
+        mass_stale = (active >= config.mass_stale_min_series and
+                      stale_total * 100 >= active * config.mass_stale_percent)
+        if row["status"] == "DISABLED":
+            state, reason = "DISABLED", "SOURCE_DISABLED"
+            message = "Source is disabled."
+        elif received is None:
+            state, reason = "UNKNOWN", "NEVER_RECEIVED"
+            message = "The source has not sent a batch."
+        elif interval is None:
+            state, reason = "UNKNOWN", "EXPECTATION_UNAVAILABLE"
+            message = "No usable source keepalive interval is configured."
+        elif age_seconds > interval * config.silence_multiplier:
+            state, reason = "SILENT", "KEEPALIVE_EXCEEDED"
+            message = "Time since the last received batch exceeds the configured silence threshold."
+        else:
+            state, reason = "ALIVE", "KEEPALIVE_WITHIN_THRESHOLD"
+            message = "A batch was received within the configured silence threshold."
+        state_counts[state] += 1
+        cur.execute("SELECT state FROM source_liveness_current WHERE source_id=%s FOR UPDATE", (row["source_id"],))
+        previous = cur.fetchone()
+        old_state = previous["state"] if previous else None
+        cur.execute(
+            """INSERT INTO source_liveness_current
+                   (source_id,state,evaluated_at,last_received_at,expected_interval_seconds,age_seconds,
+                    reason_code,reason_message,active_series_count,stale_series_count,missing_series_count,
+                    mass_stale,last_success_at,last_error_at,last_error,connector_status)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+               ON CONFLICT (source_id) DO UPDATE SET
+                   state=EXCLUDED.state,evaluated_at=EXCLUDED.evaluated_at,
+                   last_received_at=EXCLUDED.last_received_at,
+                   expected_interval_seconds=EXCLUDED.expected_interval_seconds,age_seconds=EXCLUDED.age_seconds,
+                   reason_code=EXCLUDED.reason_code,reason_message=EXCLUDED.reason_message,
+                   active_series_count=EXCLUDED.active_series_count,stale_series_count=EXCLUDED.stale_series_count,
+                   missing_series_count=EXCLUDED.missing_series_count,mass_stale=EXCLUDED.mass_stale,
+                   last_success_at=EXCLUDED.last_success_at,last_error_at=EXCLUDED.last_error_at,
+                   last_error=EXCLUDED.last_error,connector_status=EXCLUDED.connector_status""",
+            (row["source_id"], state, now, received, interval, age_seconds, reason, message,
+             active, stale, missing, mass_stale, row["last_success_at"], row["last_error_at"],
+             row["last_error"], da.Json(cur, row["connector_status"]) if row["connector_status"] is not None else None),
+        )
+        if old_state != state:
+            cur.execute(
+                """INSERT INTO source_liveness_transitions
+                       (source_id,evaluated_at,from_state,to_state,reason_code,active_series_count,
+                        stale_series_count,missing_series_count,mass_stale)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                   ON CONFLICT (source_id,evaluated_at) DO NOTHING""",
+                (row["source_id"], now, old_state, state, reason, active, stale, missing, mass_stale),
+            )
+
+    cur.execute(
+        """UPDATE data_gaps g SET cause = CASE
+                    WHEN s.state='SILENT' OR (s.state='ALIVE' AND s.mass_stale) THEN 'SOURCE_SUSPECTED'
+                    WHEN s.state='ALIVE' THEN 'NO_DATA'
+                    ELSE 'UNKNOWN' END
+             FROM source_liveness_current s
+            WHERE g.source_id=s.source_id AND g.gap_end IS NULL
+              AND s.evaluated_at=%s
+              AND g.cause IS DISTINCT FROM CASE
+                    WHEN s.state='SILENT' OR (s.state='ALIVE' AND s.mass_stale) THEN 'SOURCE_SUSPECTED'
+                    WHEN s.state='ALIVE' THEN 'NO_DATA'
+                    ELSE 'UNKNOWN' END""",
+        (now,),
+    )
+    return {"sources_evaluated": len(source_rows), "source_states": state_counts,
+            "gaps_reclassified": cur.rowcount}
+
+
+def run_once(conn: Any, now: datetime, batch_size: int = PAGE_SIZE,
+             source_config: SourceLivenessConfig | None = None) -> dict[str, Any]:
     """Re-evaluate every resolved series in keyset pages, committing each page.
 
     ``now`` is required and shared across all pages to make runs deterministic.
@@ -427,4 +542,12 @@ def run_once(conn: Any, now: datetime, batch_size: int = PAGE_SIZE) -> dict[str,
     except Exception:
         conn.rollback()
         raise
-    return {**totals, "states": states, "evaluated_at": instant}
+    try:
+        with conn.cursor() as cur:
+            source_totals = _evaluate_source_liveness(cur, instant, source_config or SourceLivenessConfig.from_env())
+        conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        message = f"freshness source evaluation failed: {type(exc).__name__}: {str(exc)}"
+        raise RuntimeError(message[:MAX_ERROR_CHARS]) from exc
+    return {**totals, **source_totals, "states": states, "evaluated_at": instant}

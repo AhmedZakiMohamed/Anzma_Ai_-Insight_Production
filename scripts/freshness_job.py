@@ -61,6 +61,9 @@ def run_pass(
         "states": result["states"],
         "gaps_opened": result["gaps_opened"],
         "gaps_closed": result["gaps_closed"],
+        "sources_evaluated": result["sources_evaluated"],
+        "source_states": result["source_states"],
+        "gaps_reclassified": result["gaps_reclassified"],
         "pages_committed": result["pages_committed"],
         "duration_s": round(duration, 3),
     }

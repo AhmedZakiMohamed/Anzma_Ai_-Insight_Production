@@ -8,6 +8,8 @@ from scripts import freshness_job
 
 
 class EmptyCursor:
+    rowcount = 0
+
     def __enter__(self):
         return self
 
@@ -19,6 +21,9 @@ class EmptyCursor:
 
     def fetchall(self):
         return []
+
+    def fetchone(self):
+        return None
 
 
 class EmptyConnection:
